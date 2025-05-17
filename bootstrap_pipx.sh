@@ -15,13 +15,13 @@ DEV_PKGS=(ruff mypy pytest pytest-asyncio pre-commit)
 python3 -m pip install --upgrade pipx >/dev/null
 pipx ensurepath
 
-echo "🏗  (Re)installing env '$ENV_NAME' …"
+echo "(Re)installing env '$ENV_NAME' …"
 pipx install --include-deps --force "uvicorn[standard]" --suffix collinearapi
 
-echo "📦  Injecting runtime pkgs …"
+echo "Injecting runtime pkgs …"
 pipx inject "$ENV_NAME" "${RUNTIME_PKGS[@]}"
 
-echo "🧰  Injecting dev tools …"
+echo "Injecting dev tools …"
 pipx inject "$ENV_NAME" "${DEV_PKGS[@]}"
 
 BIN_PATH=$(command -v "$ENV_NAME" || true)
@@ -32,7 +32,7 @@ else
   echo "❗  Could not find executable $ENV_NAME on PATH — alias skipped." >&2
 fi
 
-echo -e "\n✅  Ready!"
+echo -e "\nReady!"
 echo "   Start dev server :  collinearapi app.main:app --reload"
 echo "   Lint / format    :  ruff check app/ && ruff format app/"
 echo "   Type-check       :  mypy app/"
