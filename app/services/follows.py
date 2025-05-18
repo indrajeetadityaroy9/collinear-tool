@@ -1,6 +1,4 @@
-# app/services/follows.py
-
-"""Dataset follow management via Supabase."""
+"""Dataset follow management using Supabase tables."""
 
 from __future__ import annotations
 
@@ -17,62 +15,54 @@ __all__ = [
 ]
 
 
-async def _to_thread(func, *args, **kwargs):
-    return await asyncio.to_thread(func, *args, **kwargs)
-
-
 async def follow_dataset(user_id: str, dataset_id: str) -> None:
-    """Insert a ``(user_id, dataset_id)`` row if missing."""
+    """Ensure ``user_id`` follows ``dataset_id``."""
 
-    def _insert():
-        db = require_supabase()
-        # ``upsert`` ensures idempotency
-        db.table("dataset_follows").upsert(
-            {"user_id": user_id, "dataset_id": dataset_id}, on_conflict="user_id"
-        ).execute()
+    db = require_supabase()
 
-    await _to_thread(_insert)
+    await asyncio.to_thread(
+        lambda: db.table("dataset_follows")
+        .upsert({"user_id": user_id, "dataset_id": dataset_id}, on_conflict="user_id")
+        .execute()
+    )
 
 
 async def unfollow_dataset(user_id: str, dataset_id: str) -> None:
-    """Remove a follow relation if it exists."""
+    """Remove a follow relationship if present."""
 
-    def _delete():
-        db = require_supabase()
-        (
-            db.table("dataset_follows")
-            .delete()
-            .eq("user_id", user_id)
-            .eq("dataset_id", dataset_id)
-            .execute()
-        )
+    db = require_supabase()
 
-    await _to_thread(_delete)
+    await asyncio.to_thread(
+        lambda: db.table("dataset_follows")
+        .delete()
+        .eq("user_id", user_id)
+        .eq("dataset_id", dataset_id)
+        .execute()
+    )
 
 
 async def is_following(user_id: str, dataset_id: str) -> bool:
-    """Return ``True`` if the user follows the dataset."""
+    """Return ``True`` if ``user_id`` follows ``dataset_id``."""
 
-    def _check() -> bool:
-        db = require_supabase()
-        res = (
-            db.table("dataset_follows")
-            .select("id")
-            .eq("user_id", user_id)
-            .eq("dataset_id", dataset_id)
-            .limit(1)
-            .execute()
-        )
-        return bool(res.data)
+    db = require_supabase()
 
-    return await _to_thread(_check)
+    res = await asyncio.to_thread(
+        lambda: db.table("dataset_follows")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("dataset_id", dataset_id)
+        .limit(1)
+        .execute()
+    )
+    return bool(res.data)
 
 
 async def list_followed_datasets(user_id: str, limit: int | None = None, offset: int = 0) -> List[str]:
-    """Return dataset ids the user follows, newest first."""
+    """Return dataset IDs ``user_id`` follows, newest first."""
 
-    def _select() -> List[str]:
-        db = require_supabase()
+    db = require_supabase()
+
+    def _query():
         query = (
             db.table("dataset_follows")
             .select("dataset_id")
@@ -85,4 +75,4 @@ async def list_followed_datasets(user_id: str, limit: int | None = None, offset:
         res = query.execute()
         return [row["dataset_id"] for row in (res.data or [])]
 
-    return await _to_thread(_select)
+    return await asyncio.to_thread(_query)
