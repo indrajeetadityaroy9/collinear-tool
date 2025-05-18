@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -99,6 +101,7 @@ async def my_follows_endpoint(
     limit: int | None = Query(None, ge=1),
     offset: int = 0,
     user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_db),
 ):
     ids = await list_followed_datasets(user.id, limit=limit, offset=offset)
     return ids
