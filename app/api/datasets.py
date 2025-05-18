@@ -1,4 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query, Depends, Response
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import get_db
 
 from app.api.dependencies import current_user, User
 from app.services.follows import follow_dataset, unfollow_dataset
