@@ -21,6 +21,7 @@ pretty_bytes() {
 }
 
 BASE_URL='http://127.0.0.1:8000/api/datasets'
+FOLLOW_URL='http://127.0.0.1:8000/api/follows'
 DATASET_LIMIT="${1:-5}"
 
 echo "Fetching first ${DATASET_LIMIT} datasets (with size)…"
@@ -36,6 +37,20 @@ if [[ -z "${dataset_lines}" ]]; then
 fi
 echo "Retrieved $(echo "${dataset_lines}" | wc -l | tr -d ' ') ids."
 echo
+
+first_id=$(echo "${dataset_lines}" | head -n1 | cut -f1)
+if [[ -n "${AUTH_TOKEN:-}" ]]; then
+  auth=(-H "Authorization: Bearer ${AUTH_TOKEN}")
+  echo "Testing follow endpoints with dataset ${first_id}"
+  curl -s -X POST "${FOLLOW_URL}" "${auth[@]}" \
+       -H 'Content-Type: application/json' \
+       -d "{\"dataset_id\":\"${first_id}\"}" -o /dev/null -w 'POST %{{http_code}}\n'
+  echo "Follow list:" && curl -s "${FOLLOW_URL}" "${auth[@]}" | jq
+  curl -s -X DELETE "${FOLLOW_URL}/${first_id}" "${auth[@]}" -o /dev/null -w 'DELETE %{{http_code}}\n'
+  echo
+else
+  echo "AUTH_TOKEN not set – skipping follow endpoint tests." >&2
+fi
 
 echo "${dataset_lines}" | while IFS=$'\t' read -r id size_bytes; do
   echo "DATASET: ${id}"

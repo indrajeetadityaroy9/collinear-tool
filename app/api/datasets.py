@@ -1,14 +1,15 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from app.services.hf_datasets import (
     list_datasets_async,
     commit_history_async,
     list_repo_files_async,
-    get_file_download_url_async
+    get_file_download_url_async,
 )
+from app.services.follows import follow_dataset, unfollow_dataset
+from app.api.dependencies import current_user, User
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
-@router.get("")
 @router.get("")
 async def list_datasets_endpoint(
     limit: int | None = Query(None, ge=1),
@@ -44,11 +45,11 @@ async def file_url_endpoint(
     return {"download_url": url}
 
 @router.post("/{dataset_id:path}/follow", status_code=204)
-async def follow_endpoint(dataset_id: str, current_user: User = Depends(get_user), session: AsyncSession = Depends(get_db)):
-    await follow_dataset(session, user_id=current_user.id, dataset_id=dataset_id)
+async def follow_endpoint(dataset_id: str, user: User = Depends(current_user)):
+    follow_dataset(user.id, dataset_id)
     return Response(status_code=204)
 
 @router.delete("/{dataset_id:path}/follow", status_code=204)
-async def unfollow_endpoint(dataset_id: str, current_user: User = Depends(get_user), session: AsyncSession = Depends(get_db)):
-    await unfollow_dataset(session, user_id=current_user.id, dataset_id=dataset_id)
+async def unfollow_endpoint(dataset_id: str, user: User = Depends(current_user)):
+    unfollow_dataset(user.id, dataset_id)
     return Response(status_code=204)

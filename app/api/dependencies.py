@@ -1,7 +1,7 @@
 from fastapi import Header, HTTPException, status
 import httpx
 from app.core.config import settings
-from app.models.user import User
+from app.schemas.user import User
 
 async def current_user(
     authorization: str = Header(..., alias="Authorization"),
