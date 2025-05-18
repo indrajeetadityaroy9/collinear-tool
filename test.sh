@@ -26,10 +26,31 @@ AUTH_URL="${API_ROOT}/auth"
 USERS_URL="${API_ROOT}/users"
 FOLLOWS_URL="${API_ROOT}/follows"
 
-DATASET_LIMIT="${1:-5}"
 EMAIL="${EMAIL:-}"
 PASSWORD="${PASSWORD:-}"
 AUTH_TOKEN="${AUTH_TOKEN:-}"
+
+usage() {
+  echo "Usage: $0 [-l LIMIT] [-e EMAIL] [-p PASSWORD]" >&2
+  echo "Provide test credentials via arguments or EMAIL/PASSWORD environment variables." >&2
+}
+
+DATASET_LIMIT=5
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -l|--limit)
+      DATASET_LIMIT="$2"; shift 2 ;;
+    -e|--email)
+      EMAIL="$2"; shift 2 ;;
+    -p|--password)
+      PASSWORD="$2"; shift 2 ;;
+    -h|--help)
+      usage; exit 0 ;;
+    *)
+      DATASET_LIMIT="$1"; shift ;;
+  esac
+done
 
 echo "Fetching first ${DATASET_LIMIT} datasets (with size)…"
 cat_json=$(curl -sG "${DATASET_URL}" \
@@ -100,7 +121,7 @@ if [[ -n "$EMAIL" && -n "$PASSWORD" ]]; then
   AUTH_TOKEN=$(echo "$login_json" | jq -r '.access_token // empty')
   echo "$login_json" | jq .
 else
-  echo "\nSkipping auth tests – EMAIL or PASSWORD env vars missing"
+  echo "\nSkipping auth tests – credentials missing (use -e/-p or set EMAIL/PASSWORD)"
 fi
 
 if [[ -n "$AUTH_TOKEN" ]]; then
@@ -127,6 +148,6 @@ if [[ -n "$AUTH_TOKEN" ]]; then
   echo "\n-- My follows via /users/me/follows --"
   curl -s "$USERS_URL/me/follows" -H "Authorization: Bearer $AUTH_TOKEN" | jq .
 else
-  echo "\nSkipping user/follow tests – no AUTH_TOKEN available"
+  echo "\nSkipping user/follow tests – no AUTH_TOKEN available (login failed or credentials missing)"
 fi
 
