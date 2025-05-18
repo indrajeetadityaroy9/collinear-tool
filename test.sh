@@ -20,11 +20,19 @@ pretty_bytes() {
   '
 }
 
-BASE_URL='http://127.0.0.1:8000/api/datasets'
+API_ROOT="http://127.0.0.1:8000/api"
+DATASET_URL="${API_ROOT}/datasets"
+AUTH_URL="${API_ROOT}/auth"
+USERS_URL="${API_ROOT}/users"
+FOLLOWS_URL="${API_ROOT}/api/follows"
+
 DATASET_LIMIT="${1:-5}"
+EMAIL="${EMAIL:-}"
+PASSWORD="${PASSWORD:-}"
+AUTH_TOKEN="${AUTH_TOKEN:-}"
 
 echo "Fetching first ${DATASET_LIMIT} datasets (with size)…"
-cat_json=$(curl -sG "${BASE_URL}" \
+cat_json=$(curl -sG "${DATASET_URL}" \
   --data-urlencode "limit=${DATASET_LIMIT}" \
   --data-urlencode "with_size=true")
 
@@ -43,11 +51,11 @@ echo "${dataset_lines}" | while IFS=$'\t' read -r id size_bytes; do
   echo
 
   echo "Last 3 commits:"
-  curl -s "${BASE_URL}/${id}/commits" | jq '.[0:3]'
+  curl -s "${DATASET_URL}/${id}/commits" | jq '.[0:3]'
   echo
 
   echo "File list:"
-  files_json=$(curl -s "${BASE_URL}/${id}/files")
+  files_json=$(curl -s "${DATASET_URL}/${id}/files")
 
   files=$(echo "${files_json}" | jq -r '
       if type == "array"        then .[]
@@ -67,7 +75,7 @@ echo "${dataset_lines}" | while IFS=$'\t' read -r id size_bytes; do
   [[ -z "${target_file}" ]] && target_file=$(echo "${files}" | head -n1)
 
   printf "\n Resolving URL for '%s' …\n" "${target_file}"
-  dl_url=$(curl -sG "${BASE_URL}/${id}/file-url" \
+  dl_url=$(curl -sG "${DATASET_URL}/${id}/file-url" \
              --data-urlencode "filename=${target_file}" | jq -r '.download_url // empty')
 
   if [[ -n "${dl_url}" ]]; then
@@ -79,3 +87,37 @@ echo "${dataset_lines}" | while IFS=$'\t' read -r id size_bytes; do
   fi
   echo
 done
+
+if [[ -n "$EMAIL" && -n "$PASSWORD" ]]; then
+  echo "\n== Testing auth endpoints =="
+  curl -s -X POST "$AUTH_URL/register" \
+    -H 'Content-Type: application/json' \
+    -d '{"email":"'"$EMAIL"'","password":"'"$PASSWORD"'"}' | jq .
+
+  login_json=$(curl -s -X POST "$AUTH_URL/login" \
+    -H 'Content-Type: application/json' \
+    -d '{"email":"'"$EMAIL"'","password":"'"$PASSWORD"'"}')
+  AUTH_TOKEN=$(echo "$login_json" | jq -r '.access_token // empty')
+  echo "$login_json" | jq .
+else
+  echo "\nSkipping auth tests – EMAIL/PASSWORD not provided"
+fi
+
+if [[ -n "$AUTH_TOKEN" ]]; then
+  echo "\n== Testing users endpoints =="
+  curl -s -H "Authorization: Bearer $AUTH_TOKEN" "$USERS_URL/me" | jq .
+
+  echo "\n== Testing follows endpoints =="
+  first_dataset=$(echo "$dataset_lines" | head -n1 | cut -f1)
+  curl -s -X POST "$FOLLOWS_URL" \
+    -H "Authorization: Bearer $AUTH_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d '{"dataset_id":"'"$first_dataset"'"}' -o /dev/null -w 'POST %s -> %s\n' "$first_dataset" '%{http_code}'
+  curl -s "$FOLLOWS_URL" -H "Authorization: Bearer $AUTH_TOKEN" | jq .
+  curl -s -X DELETE "$FOLLOWS_URL/$first_dataset" -H "Authorization: Bearer $AUTH_TOKEN" -o /dev/null -w 'DELETE %s -> %s\n' "$first_dataset" '%{http_code}'
+
+  echo "\n-- My follows via /users/me/follows --"
+  curl -s "$USERS_URL/me/follows" -H "Authorization: Bearer $AUTH_TOKEN" | jq .
+else
+  echo "\nAUTH_TOKEN not available – skipping user/follow tests"
+fi
