@@ -1,7 +1,11 @@
 from logging.config import fileConfig
+import os
+import sys
 
-from sqlalchemy import engine_from_config
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
 from sqlalchemy import pool
+from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 
@@ -16,9 +20,10 @@ if config.config_file_name is not None:
 
 # add your model's MetaData object here
 # for 'autogenerate' support
-# from myapp import mymodel
-# target_metadata = mymodel.Base.metadata
-target_metadata = None
+from app.db import Base
+from app import models  # ensure models are imported
+
+target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
@@ -51,25 +56,23 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
+    """Run migrations in 'online' mode."""
 
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
-    """
-    connectable = engine_from_config(
+    connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
 
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+    async def run_async_migrations() -> None:
+        async with connectable.connect() as connection:
+            await connection.run_sync(
+                lambda conn: context.configure(connection=conn, target_metadata=target_metadata)
+            )
+            await connection.run_sync(context.run_migrations)
 
-        with context.begin_transaction():
-            context.run_migrations()
+    import asyncio
+    asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():
