@@ -24,7 +24,7 @@ API_ROOT="http://127.0.0.1:8000/api"
 DATASET_URL="${API_ROOT}/datasets"
 AUTH_URL="${API_ROOT}/auth"
 USERS_URL="${API_ROOT}/users"
-FOLLOWS_URL="${API_ROOT}/api/follows"
+FOLLOWS_URL="${API_ROOT}/follows"
 
 DATASET_LIMIT="${1:-5}"
 EMAIL="${EMAIL:-}"
@@ -100,7 +100,7 @@ if [[ -n "$EMAIL" && -n "$PASSWORD" ]]; then
   AUTH_TOKEN=$(echo "$login_json" | jq -r '.access_token // empty')
   echo "$login_json" | jq .
 else
-  echo "\nSkipping auth tests – EMAIL/PASSWORD not provided"
+  echo "\nSkipping auth tests – EMAIL or PASSWORD env vars missing"
 fi
 
 if [[ -n "$AUTH_TOKEN" ]]; then
@@ -116,8 +116,17 @@ if [[ -n "$AUTH_TOKEN" ]]; then
   curl -s "$FOLLOWS_URL" -H "Authorization: Bearer $AUTH_TOKEN" | jq .
   curl -s -X DELETE "$FOLLOWS_URL/$first_dataset" -H "Authorization: Bearer $AUTH_TOKEN" -o /dev/null -w 'DELETE %s -> %s\n' "$first_dataset" '%{http_code}'
 
+  echo "\n-- Dataset follow/unfollow via dataset routes --"
+  curl -s -X POST "${DATASET_URL}/${first_dataset}/follow" \
+    -H "Authorization: Bearer $AUTH_TOKEN" \
+    -o /dev/null -w 'POST %s/follow -> %s\n' "$first_dataset" '%{http_code}'
+  curl -s -X DELETE "${DATASET_URL}/${first_dataset}/follow" \
+    -H "Authorization: Bearer $AUTH_TOKEN" \
+    -o /dev/null -w 'DELETE %s/follow -> %s\n' "$first_dataset" '%{http_code}'
+
   echo "\n-- My follows via /users/me/follows --"
   curl -s "$USERS_URL/me/follows" -H "Authorization: Bearer $AUTH_TOKEN" | jq .
 else
-  echo "\nAUTH_TOKEN not available – skipping user/follow tests"
+  echo "\nSkipping user/follow tests – no AUTH_TOKEN available"
 fi
+
