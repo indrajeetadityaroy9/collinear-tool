@@ -3,6 +3,9 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import get_db
 from gotrue.errors import AuthApiError
 
 from app.api.dependencies import current_user, User
