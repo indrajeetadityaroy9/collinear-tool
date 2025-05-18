@@ -2,7 +2,8 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.api import api_router
 from app.api.health import supabase_alive
-import logging, sys
+import logging
+import sys
 
 logging.basicConfig(
     level=logging.INFO,
