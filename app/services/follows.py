@@ -1,11 +1,13 @@
 # app/services/follows.py
 
-from typing import List, Optional
-from sqlalchemy import delete, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+"""Dataset follow management via Supabase."""
 
-from app.models.dataset_follows import DatasetFollow
+from __future__ import annotations
+
+import asyncio
+from typing import List
+
+from app.supabase import require_supabase
 
 __all__ = [
     "follow_dataset",
@@ -14,86 +16,73 @@ __all__ = [
     "list_followed_datasets",
 ]
 
-async def follow_dataset(
-    session: AsyncSession,
-    *,
-    user_id: int,
-    dataset_id: str,
-) -> DatasetFollow:
-    """
-    Insert a *(user, dataset)* row – **silently succeeds** if it already exists.
 
-    Returns the row (freshly inserted or pre-existing).
-    """
-
-    q = select(DatasetFollow).where(
-        DatasetFollow.user_id == user_id,
-        DatasetFollow.dataset_id == dataset_id,
-    )
-    if existing := (await session.execute(q)).scalar_one_or_none():
-        return existing
-
-    follow = DatasetFollow(user_id=user_id, dataset_id=dataset_id)
-    session.add(follow)
-    try:
-        await session.commit()
-    except IntegrityError:          
-        await session.rollback()
-        follow = (await session.execute(q)).scalar_one()
-
-    return follow
+async def _to_thread(func, *args, **kwargs):
+    return await asyncio.to_thread(func, *args, **kwargs)
 
 
-# ────────────────────────────────────────────────────────────────────
-# Delete (no-op if missing) ─────────────────────────────────────────
-# ────────────────────────────────────────────────────────────────────
-async def unfollow_dataset(
-    session: AsyncSession,
-    *,
-    user_id: int,
-    dataset_id: str,
-) -> None:
-    stmt = delete(DatasetFollow).where(
-        DatasetFollow.user_id == user_id,
-        DatasetFollow.dataset_id == dataset_id,
-    )
-    await session.execute(stmt)
-    await session.commit()
+async def follow_dataset(user_id: str, dataset_id: str) -> None:
+    """Insert a ``(user_id, dataset_id)`` row if missing."""
+
+    def _insert():
+        db = require_supabase()
+        # ``upsert`` ensures idempotency
+        db.table("dataset_follows").upsert(
+            {"user_id": user_id, "dataset_id": dataset_id}, on_conflict="user_id"
+        ).execute()
+
+    await _to_thread(_insert)
 
 
-async def is_following(
-    session: AsyncSession,
-    *,
-    user_id: int,
-    dataset_id: str,
-) -> bool:
-    q = select(DatasetFollow.id).where(
-        DatasetFollow.user_id == user_id,
-        DatasetFollow.dataset_id == dataset_id,
-    )
-    return (await session.execute(q)).scalar_one_or_none() is not None
+async def unfollow_dataset(user_id: str, dataset_id: str) -> None:
+    """Remove a follow relation if it exists."""
+
+    def _delete():
+        db = require_supabase()
+        (
+            db.table("dataset_follows")
+            .delete()
+            .eq("user_id", user_id)
+            .eq("dataset_id", dataset_id)
+            .execute()
+        )
+
+    await _to_thread(_delete)
 
 
-async def list_followed_datasets(
-    session: AsyncSession,
-    *,
-    user_id: int,
-    limit: Optional[int] = None,
-    offset: int = 0,
-) -> List[DatasetFollow]:
-    """
-    Return the user’s followed datasets (most-recent first).
+async def is_following(user_id: str, dataset_id: str) -> bool:
+    """Return ``True`` if the user follows the dataset."""
 
-    `limit=None`  →  unlimited.
-    """
-    q = (
-        select(DatasetFollow)
-        .where(DatasetFollow.user_id == user_id)
-        .order_by(DatasetFollow.followed_at.desc())
-        .offset(offset)
-    )
-    if limit:
-        q = q.limit(limit)
+    def _check() -> bool:
+        db = require_supabase()
+        res = (
+            db.table("dataset_follows")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("dataset_id", dataset_id)
+            .limit(1)
+            .execute()
+        )
+        return bool(res.data)
 
-    result = await session.execute(q)
-    return list(result.scalars().all())
+    return await _to_thread(_check)
+
+
+async def list_followed_datasets(user_id: str, limit: int | None = None, offset: int = 0) -> List[str]:
+    """Return dataset ids the user follows, newest first."""
+
+    def _select() -> List[str]:
+        db = require_supabase()
+        query = (
+            db.table("dataset_follows")
+            .select("dataset_id")
+            .eq("user_id", user_id)
+            .order("followed_at", desc=True)
+            .offset(offset)
+        )
+        if limit:
+            query = query.limit(limit)
+        res = query.execute()
+        return [row["dataset_id"] for row in (res.data or [])]
+
+    return await _to_thread(_select)
