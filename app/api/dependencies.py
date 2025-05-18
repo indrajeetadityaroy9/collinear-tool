@@ -1,7 +1,9 @@
 from fastapi import Header, HTTPException, status
-import httpx
-from app.core.config import settings
+from jose import jwt, JWTError
 from app.schemas.user import User
+import os
+
+SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")  # Set this in your .env for production
 
 async def current_user(
     authorization: str = Header(..., alias="Authorization"),
@@ -11,17 +13,16 @@ async def current_user(
 
     token = authorization.split(" ", 1)[1]
 
-    url = f"{settings.supabase_url}/auth/v1/user"
-    headers = {
-        "apikey": settings.supabase_anon_key,
-        "Authorization": f"Bearer {token}",
-    }
-
-    async with httpx.AsyncClient(timeout=3) as client:
-        resp = await client.get(url, headers=headers)
-
-    if resp.status_code != 200:
+    try:
+        if SUPABASE_JWT_SECRET:
+            payload = jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"])
+        else:
+            # For local dev, skip verification (NOT for production)
+            payload = jwt.get_unverified_claims(token)
+        user_id = payload.get("sub")
+        email = payload.get("email")
+        if not user_id:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token: no user id")
+        return User(id=user_id, email=email)
+    except JWTError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
-
-    data = resp.json()
-    return User(id=data["id"], email=data.get("email"))

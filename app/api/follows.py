@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.db import get_db
 
 from app.services import follows as service
 from app.api.dependencies import current_user, User
@@ -28,13 +25,14 @@ class FollowOut(BaseModel):
 # ───────────────────────────────────────── endpoints ────────────────────────────────────────
 @router.get("", response_model=list[FollowOut])
 async def list_my_follows(
+    request: Request,
     user: User = Depends(current_user),
-    session: AsyncSession = Depends(get_db),
 ):
     """
     Return the dataset IDs the authenticated user is following.
     """
-    ids = await service.list_followed_datasets(user.id)
+    jwt = request.headers.get("authorization", "").split(" ", 1)[1]
+    ids = await service.list_followed_datasets(user.id, jwt=jwt)
     return [{"dataset_id": d} for d in ids]
 
 
@@ -43,30 +41,33 @@ async def list_my_follows(
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def follow_dataset(
+    request: Request,
     payload: FollowIn,
     user: User = Depends(current_user),
-    session: AsyncSession = Depends(get_db),
 ):
     """
     Follow a dataset. 204 No Content on success.
     """
+    jwt = request.headers.get("authorization", "").split(" ", 1)[1]
     try:
-        await service.follow_dataset(user.id, payload.dataset_id)
+        await service.follow_dataset(user.id, payload.dataset_id, jwt)
     except Exception as exc:  # Supabase client raises generic `Exception`
         raise HTTPException(400, detail=str(exc)) from exc
 
 
 @router.delete(
-    "/{dataset_id}",
+    "/{dataset_id:path}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def unfollow_dataset(
+    request: Request,
     dataset_id: str,
     user: User = Depends(current_user),
-    session: AsyncSession = Depends(get_db),
 ):
     """
     Un-follow a dataset. 204 No Content whether or not the relationship existed.
     """
-    await service.unfollow_dataset(user.id, dataset_id)
+    print("DEBUG: unfollow endpoint called", flush=True)
+    jwt = request.headers.get("authorization", "").split(" ", 1)[1]
+    await service.unfollow_dataset(user.id, dataset_id, jwt)
 

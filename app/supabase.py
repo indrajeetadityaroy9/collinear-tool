@@ -8,6 +8,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from supabase import Client, create_client
 
 
+print(os.environ.get("SUPABASE_URL"))
+print(os.environ.get("SUPABASE_ANON_KEY"))
+
 class _Settings(BaseSettings):
     """
     Reads SUPABASE_URL and SUPABASE_SERVICE_KEY.
@@ -21,7 +24,7 @@ class _Settings(BaseSettings):
     SUPABASE_SERVICE_KEY: str
 
     # Tell pydantic-settings to auto-load `.env` if present
-    model_config: Final = SettingsConfigDict(env_file=".env", case_sensitive=False)
+    model_config: Final = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
 
 def _build_client() -> Optional[Client]:
@@ -30,7 +33,7 @@ def _build_client() -> Optional[Client]:
 
     That means:
     • local dev → put the two vars in .env; client is created
-    • CI / unit-tests that don’t need Supabase → env vars missing; client is None
+    • CI / unit-tests that don't need Supabase → env vars missing; client is None
     """
     try:
         s = _Settings()                     # raises ValidationError if missing
@@ -43,6 +46,16 @@ def _build_client() -> Optional[Client]:
     return create_client(s.SUPABASE_URL, s.SUPABASE_SERVICE_KEY)
 
 
+# Store these at module level
+_settings = None
+try:
+    _settings = _Settings()
+except Exception:
+    pass
+
+SUPABASE_URL = _settings.SUPABASE_URL if _settings else None
+SUPABASE_SERVICE_KEY = _settings.SUPABASE_SERVICE_KEY if _settings else None
+
 #: single, shared instance – may be ``None`` in test/CI environments
 supabase: Optional[Client] = _build_client()
 
@@ -50,21 +63,16 @@ supabase: Optional[Client] = _build_client()
 # ──────────────────────────────────────────────────────────────────────
 # Helper for service-layer code
 # ──────────────────────────────────────────────────────────────────────
-def require_supabase() -> Client:
+def require_supabase(jwt: str | None = None) -> Client:
     """
-    Ensure a live client is available.
-
-    Call this **inside** any endpoint/service that really needs Supabase:
-
-        db = require_supabase()
-        db.table("dataset_follows").insert({...}).execute()
-
-    If the client is not configured the function raises a RuntimeError (→ FastAPI
-    will translate that into HTTP 500 unless you trap it yourself).
+    Ensure a live client is available. If jwt is provided, set the session for the client.
     """
-    if supabase is None:
+    if SUPABASE_URL is None or SUPABASE_SERVICE_KEY is None:
         raise RuntimeError(
             "Supabase credentials are not configured. "
             "Set SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables."
         )
-    return supabase
+    client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    if jwt:
+        client.auth.set_session(jwt, "")  # Pass empty string for refresh_token
+    return client

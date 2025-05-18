@@ -5,9 +5,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import get_db
 from gotrue.errors import AuthApiError
 
 from app.api.dependencies import current_user, User
@@ -50,7 +48,7 @@ async def update_me(
     token = authorization.split(" ", 1)[1]
     url = f"{settings.supabase_url}/auth/v1/user"
     headers = {
-        "apikey": settings.supabase_anon_key,
+        "apikey": settings.supabase_anon_key.get_secret_value(),
         "Authorization": f"Bearer {token}",
     }
 
@@ -89,7 +87,7 @@ async def logout(
 
     url = f"{settings.supabase_url}/auth/v1/logout"
     headers = {
-        "apikey": settings.supabase_anon_key,
+        "apikey": settings.supabase_anon_key.get_secret_value(),
         "Authorization": f"Bearer {access_token}",
     }
 
@@ -101,7 +99,6 @@ async def my_follows_endpoint(
     limit: int | None = Query(None, ge=1),
     offset: int = 0,
     user: User = Depends(current_user),
-    session: AsyncSession = Depends(get_db),
 ):
     ids = await list_followed_datasets(user.id, limit=limit, offset=offset)
     return ids

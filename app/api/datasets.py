@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query, Depends, Response
+from fastapi import APIRouter, HTTPException, Query, Depends, Response, Request
 
 from app.api.dependencies import current_user, User
 from app.services.follows import follow_dataset, unfollow_dataset
@@ -46,11 +46,13 @@ async def file_url_endpoint(
     return {"download_url": url}
 
 @router.post("/{dataset_id:path}/follow", status_code=204)
-async def follow_endpoint(dataset_id: str, user: User = Depends(current_user)):
-    await follow_dataset(user.id, dataset_id)
+async def follow_endpoint(request: Request, dataset_id: str, user: User = Depends(current_user)):
+    jwt = request.headers.get("authorization", "").split(" ", 1)[1]
+    await follow_dataset(user.id, dataset_id, jwt)
     return Response(status_code=204)
 
 @router.delete("/{dataset_id:path}/follow", status_code=204)
-async def unfollow_endpoint(dataset_id: str, user: User = Depends(current_user)):
-    await unfollow_dataset(user.id, dataset_id)
+async def unfollow_endpoint(request: Request, dataset_id: str, user: User = Depends(current_user)):
+    jwt = request.headers.get("authorization", "").split(" ", 1)[1]
+    await unfollow_dataset(user.id, dataset_id, jwt)
     return Response(status_code=204)
