@@ -4,13 +4,16 @@ from app.core.config import settings
 from typing import Dict, Any
 from app.services.redis_client import cache_get, cache_set, generate_cache_key, cache_invalidate
 import asyncio
+import uuid
+import time
+from datetime import datetime, timezone
 
-router = APIRouter(prefix="/health", tags=["health"])
+router = APIRouter(tags=["health"])
 
 async def supabase_alive(timeout: float = 2.0) -> bool:
-    url = f"{settings.supabase_url}/auth/v1/health"
+    url = f"{settings.SUPABASE_URL}/auth/v1/health"
     headers = {
-        "apikey": settings.supabase_anon_key.get_secret_value()
+        "apikey": settings.SUPABASE_ANON_KEY.get_secret_value()
     }
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -25,10 +28,6 @@ async def health_supabase():
         raise HTTPException(503, "Supabase unreachable")
     return {"status": "ok"}
 
-@router.get("/live", include_in_schema=False)
-async def health_live():
-    return {"status": "alive"}
-
 @router.get("/health")
 async def health_check() -> Dict[str, Any]:
     """
@@ -41,6 +40,7 @@ async def health_check() -> Dict[str, Any]:
         "status": "ok",
         "api": "running",
         "version": "1.0.0",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "services": {}
     }
     
@@ -49,46 +49,99 @@ async def health_check() -> Dict[str, Any]:
         try:
             # Generate a random key to test Redis
             test_key = generate_cache_key("health", "check")
-            await cache_set(test_key, "test", expire=10)
-            test_result = await cache_get(test_key)
+            test_value = {"timestamp": time.time(), "id": str(uuid.uuid4())}
+            
+            # Test write
+            await cache_set(test_key, test_value, expire=60)
+            
+            # Test read
+            cached_value = await cache_get(test_key)
+            
+            # Test delete
             await cache_invalidate(test_key)
             
+            redis_ok = cached_value is not None and cached_value.get("timestamp") == test_value.get("timestamp")
+            
             health_data["services"]["redis"] = {
-                "status": "connected" if test_result == "test" else "error",
-                "url": settings.redis_url.replace(":6379", ":*****"),  # Mask port for security
+                "status": "ok" if redis_ok else "degraded",
+                "message": "Cache operations successful" if redis_ok else "Cache read/write inconsistency detected"
             }
         except Exception as e:
             health_data["services"]["redis"] = {
                 "status": "error",
-                "error": str(e)
+                "message": f"Redis error: {str(e)}"
             }
+            health_data["status"] = "degraded"
+    
+    # Check Celery status if available
+    try:
+        from app.tasks.dataset_tasks import DatasetImpactTask
+        stats = DatasetImpactTask.get_stats()
+        
+        health_data["services"]["celery"] = {
+            "status": "ok",
+            "tasks_processed": stats["processed"],
+            "tasks_errors": stats["errors"],
+            "cache_hits": stats["cache_hits"]
+        }
+    except ImportError:
+        # Celery not available, which is OK
+        pass
+    except Exception as e:
+        health_data["services"]["celery"] = {
+            "status": "error",
+            "message": f"Celery error: {str(e)}"
+        }
+        health_data["status"] = "degraded"
+    
+    # If any services are degraded, mark overall health as degraded
+    for service_name, service_info in health_data["services"].items():
+        if service_info.get("status") not in ["ok", "available"]:
+            health_data["status"] = "degraded"
+            break
     
     return health_data
 
+@router.get("/live")
+async def liveness_check():
+    """Simple endpoint to check if the API is alive."""
+    return {"status": "alive"}
+
+@router.get("/ready")
+async def readiness_check():
+    """
+    Readiness probe that checks if all required services are available.
+    Used by Kubernetes and other orchestrators to determine if traffic should be sent to this instance.
+    """
+    checks = {"status": "ready", "checks": {}}
+    
+    # Check Redis connectivity
+    if settings.enable_redis_cache:
+        try:
+            test_key = generate_cache_key("health", "ready")
+            await cache_set(test_key, {"timestamp": time.time()}, expire=60)
+            checks["checks"]["redis"] = "ok"
+        except Exception as e:
+            checks["status"] = "not_ready"
+            checks["checks"]["redis"] = f"error: {str(e)}"
+    
+    return checks
+
 @router.get("/mock-test")
-async def mock_test_endpoint() -> Dict[str, Any]:
+async def mock_test(delay: float = 0.1):
     """
-    Mock endpoint for testing caching functionality.
-    This endpoint intentionally has a delay to simulate work.
+    Test endpoint that simulates processing delay.
+    Used for testing caching performance.
     """
-    # Introduce a delay to simulate processing work
-    await asyncio.sleep(0.1)
+    # Simulate processing time
+    await asyncio.sleep(delay)
     
     return {
-        "status": "success",
-        "message": "This response can be cached",
-        "data": {
-            "id": "mock-123",
-            "name": "Test Dataset",
-            "metrics": {
-                "size_bytes": 1024 * 1024 * 100,  # 100 MB
-                "file_count": 250,
-                "downloads": 5000,
-                "likes": 150
-            }
-        }
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "test_id": str(uuid.uuid4()),
+        "delay": delay
     }
- 
+
 @router.get("/mock-dataset-impact")
 async def mock_dataset_impact(dataset_id: str, skip_cache: bool = False) -> Dict[str, Any]:
     """

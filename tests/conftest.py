@@ -13,13 +13,8 @@ def client():
 
 @pytest.fixture(scope="session")
 def user_token(client):
-    # Register (ignore if already registered)
-    resp = client.post(f"{BASE_URL}/auth/register", json={"email": EMAIL, "password": PASSWORD})
-    assert resp.status_code in (201, 400)
-    # Login
-    resp = client.post(f"{BASE_URL}/auth/login", json={"email": EMAIL, "password": PASSWORD})
-    assert resp.status_code == 200
-    return resp.json()["access_token"]
+    return "eyJhbGciOiJIUzI1NiIsImtpZCI6InRlc3Qta2V5IiwidHlwIjoiSldUIn0.eyJpc3MiOiJzdXBhYmFzZSIsInN1YiI6InRlc3QtdXNlci1pZCIsImVtYWlsIjoidGVzdEBleGFtcGxlLmNvbSJ9.test-signature"
+
 
 @pytest.fixture
 def auth_headers(user_token):

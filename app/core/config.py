@@ -1,29 +1,43 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import HttpUrl, SecretStr, Field
+from __future__ import annotations
 
+import os
+from typing import Final, Optional
+
+from pydantic import SecretStr, HttpUrl, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    supabase_url: HttpUrl = Field(..., env="SUPABASE_URL")
-    supabase_anon_key: SecretStr = Field(..., env="SUPABASE_ANON_KEY")
-    supabase_service_key: SecretStr | None = Field(None, env="SUPABASE_SERVICE_KEY")
-    hf_api_token: SecretStr | None = Field(None, env="HF_API_TOKEN")
-    
+    """
+    Core application settings.
+    Reads environment variables and .env file.
+    """
+    # Supabase Settings
+    SUPABASE_URL: HttpUrl
+    SUPABASE_SERVICE_KEY: SecretStr
+    SUPABASE_ANON_KEY: SecretStr
+    SUPABASE_JWT_SECRET: Optional[SecretStr] = None # Optional for local dev
+
+    # Hugging Face API Token
+    HF_API_TOKEN: Optional[SecretStr] = None
+
     # Redis settings
-    redis_url: str | None = Field("redis://localhost:6379/0", env="REDIS_URL")
-    redis_password: SecretStr | None = Field(None, env="REDIS_PASSWORD")
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_PASSWORD: Optional[SecretStr] = None
     
     # Caching settings
-    enable_redis_cache: bool = Field(True, env="ENABLE_REDIS_CACHE")
-    cache_ttl: int = Field(3600, env="CACHE_TTL")  # Default: 1 hour
-    
-    # Worker settings
-    worker_concurrency: int = Field(5, env="WORKER_CONCURRENCY")
-    worker_batch_size: int = Field(50, env="WORKER_BATCH_SIZE")
+    ENABLE_REDIS_CACHE: bool = True
+    CACHE_TTL: int = 3600  # Default: 1 hour
 
-    model_config = SettingsConfigDict(
-        env_file=".env",      
-        env_prefix="",         
-        extra="ignore",  # Allow extra variables in .env
+    # Worker settings
+    WORKER_CONCURRENCY: int = 5
+    WORKER_BATCH_SIZE: int = 50
+
+    # Tell pydantic-settings to auto-load `.env` if present
+    model_config: Final = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore"
     )
 
+# Single, shared instance of settings
 settings = Settings()

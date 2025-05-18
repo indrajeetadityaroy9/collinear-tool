@@ -1,0 +1,23 @@
+#!/bin/bash
+
+set -o errexit
+set -o nounset
+
+echo "Starting Flower dashboard..."
+
+
+worker_ready() {
+    celery -A app.core.celery_app inspect ping
+}
+
+echo "Waiting for Celery workers to be available..."
+until worker_ready; do
+  >&2 echo 'Celery workers not available - sleeping'
+  sleep 1
+done
+>&2 echo 'Celery workers are available - continuing...'
+
+exec celery -A app.core.celery_app flower \
+    --port=5555 \
+    --broker="${REDIS_URL:-redis://redis:6379/0}" \
+    --loglevel=${LOG_LEVEL:-INFO} 

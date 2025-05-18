@@ -8,19 +8,22 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
-    command: redis-server --appendonly yes
+    command: redis-server /usr/local/etc/redis/redis.conf
 
   # API server
   api:
     build:
       context: .
-      dockerfile: Dockerfile.api
+      dockerfile: ./compose/local/fastapi/Dockerfile
+    image: collinear-tool-api
+    command: /start-api
     ports:
       - "8000:8000"
     volumes:
@@ -30,43 +33,103 @@ services:
       - UVICORN_HOST=0.0.0.0
       - UVICORN_PORT=8000
       - ENABLE_REDIS_CACHE=True
+      - LOG_LEVEL=INFO
     env_file:
       - .env
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
-  # Worker processes for background tasks
-  worker1:
+  # Celery worker for dataset processing
+  celery-worker:
     build:
       context: .
-      dockerfile: Dockerfile.worker
+      dockerfile: ./compose/local/fastapi/Dockerfile
+    image: collinear-tool-celery-worker
+    command: /start-celeryworker
     volumes:
       - .:/app
     environment:
       - REDIS_URL=redis://redis:6379/0
       - WORKER_CONCURRENCY=5
       - LOG_LEVEL=INFO
+      - CELERY_QUEUE=dataset_impacts
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+
+  # Celery beat scheduler for periodic tasks
+  celery-scheduler:
+    build:
+      context: .
+      dockerfile: ./compose/local/fastapi/Dockerfile
+    image: collinear-tool-celery-scheduler
+    command: /start-celerybeat
+    volumes:
+      - .:/app
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=INFO
+      - MODE=scheduler
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Flower monitoring dashboard
+  flower:
+    build:
+      context: .
+      dockerfile: ./compose/local/fastapi/Dockerfile
+    image: collinear-tool-flower
+    command: /start-flower
+    ports:
+      - "5555:5555"
+    volumes:
+      - .:/app
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=INFO
     env_file:
       - .env
     depends_on:
       - redis
+      - celery-worker
     restart: unless-stopped
 
-  worker2:
+  # Legacy worker process (kept for backward compatibility)
+  legacy-worker:
     build:
       context: .
-      dockerfile: Dockerfile.worker
+      dockerfile: ./compose/local/fastapi/Dockerfile
+    image: collinear-tool-legacy-worker
+    command: /start-legacy
     volumes:
       - .:/app
     environment:
       - REDIS_URL=redis://redis:6379/0
       - WORKER_CONCURRENCY=5
       - LOG_LEVEL=INFO
+      - USE_LEGACY_WORKER=true
     env_file:
       - .env
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

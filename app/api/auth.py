@@ -1,39 +1,24 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from gotrue.errors import AuthApiError
 from datetime import datetime, timezone
 from app.schemas.auth import RegisterIn, LoginIn, SessionOut
-from app.repos.user_repo import UserRepo
+from app.services.auth_service import AuthService
+from app.api.dependencies import get_auth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-@router.post("/register", response_model=SessionOut, status_code=status.HTTP_201_CREATED)
-async def register(body: RegisterIn, repo: UserRepo = Depends()):
-    try:
-        res = await repo.register(body.email, body.password.get_secret_value())
-    except AuthApiError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, e.message)
-
-    if res.session is None:
-        return HTTPException(
-            status.HTTP_202_ACCEPTED,
+@router.post("/register", response_model=SessionOut, status_code=status.HTTP_201_CREATED,
+            responses={status.HTTP_202_ACCEPTED: {"description": "Signup succeeded — check your e-mail to confirm."}})
+async def register(body: RegisterIn, auth_service: AuthService = Depends(get_auth_service)):
+    session = await auth_service.register(body)
+    if session is None:
+        # This matches the case where AuthService.register returns None for email confirmation pending
+        raise HTTPException(
+            status_code=status.HTTP_202_ACCEPTED,
             detail="Signup succeeded — check your e-mail to confirm.",
         )
-
-    s = res.session
-    return SessionOut(
-        access_token=s.access_token,
-        expires_at=datetime.fromtimestamp(s.expires_at, tz=timezone.utc),
-    )
+    return session # This is already a SessionOut object
 
 @router.post("/login", response_model=SessionOut)
-async def login(body: LoginIn, repo: UserRepo = Depends()):
-    try:
-        res = await repo.login(body.email, body.password.get_secret_value())
-    except AuthApiError as e:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, e.message)
-
-    s = res.session
-    return SessionOut(
-        access_token=s.access_token,
-        expires_at=datetime.fromtimestamp(s.expires_at, tz=timezone.utc),
-    )
+async def login(body: LoginIn, auth_service: AuthService = Depends(get_auth_service)):
+    session = await auth_service.login(body)
+    return session # This is already a SessionOut object

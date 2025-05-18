@@ -3,7 +3,7 @@ from typing import List, Dict, Any, Optional
 import uuid
 from datetime import datetime, timezone
 
-from app.api.dependencies import current_user, User
+from app.api.dependencies import get_current_user, get_core_settings
 from app.services.follows import follow_dataset, unfollow_dataset
 from app.services.hf_datasets import (
     list_datasets_async,
@@ -21,9 +21,10 @@ from app.services.dataset_impacts import (
     populate_impact_assessments,
     get_batch_status
 )
-from app.schemas.dataset import ImpactAssessment, ImpactLevel, DatasetMetrics
-from app.core.config import settings
+from app.schemas.dataset import ImpactAssessment, ImpactLevel, DatasetMetrics, Dataset, DatasetCreate, DatasetUpdate
+from app.core.config import settings, Settings
 from app.services.redis_client import cache_get, cache_set, generate_cache_key
+from app.schemas.user import User
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -51,7 +52,7 @@ async def list_datasets_endpoint(
     - Caching results for better performance
     """
     # Generate cache key based on request parameters
-    if settings.enable_redis_cache and not skip_cache:
+    if settings.ENABLE_REDIS_CACHE and not skip_cache:
         cache_key = generate_cache_key(
             DATASET_LIST_CACHE_KEY,
             str(limit),
@@ -76,7 +77,7 @@ async def list_datasets_endpoint(
     )
     
     # Cache results
-    if settings.enable_redis_cache and not skip_cache:
+    if settings.ENABLE_REDIS_CACHE and not skip_cache:
         await cache_set(cache_key, results, expire=DATASET_LIST_CACHE_TTL)
     
     return results
@@ -109,7 +110,7 @@ async def dataset_impact_endpoint(
         jwt = auth_header.split(" ", 1)[1]
     
     # Try Redis cache first for the fastest response
-    if settings.enable_redis_cache and not force_refresh:
+    if settings.ENABLE_REDIS_CACHE and not force_refresh:
         cache_key = generate_cache_key("dataset:impact", dataset_id)
         cached_impact = await cache_get(cache_key)
         if cached_impact:
@@ -153,7 +154,7 @@ async def dataset_impact_endpoint(
             )
             
             # Cache in Redis for faster future access
-            if settings.enable_redis_cache:
+            if settings.ENABLE_REDIS_CACHE:
                 cache_key = generate_cache_key("dataset:impact", dataset_id)
                 await cache_set(cache_key, assessment.dict(), expire=DATASET_LIST_CACHE_TTL)
                 
@@ -209,6 +210,7 @@ async def populate_impacts_endpoint(
     request: Request,
     dataset_ids: List[str],
     background_tasks: BackgroundTasks,
+    force_refresh: bool = Query(False, description="Force refresh of dataset impacts even when cached"),
 ) -> Dict[str, Any]:
     """
     Populate impact assessments for a batch of datasets.
@@ -217,6 +219,8 @@ async def populate_impacts_endpoint(
     for datasets to avoid doing it on-demand.
     
     It runs as a background task to prevent timeouts on large batches.
+    
+    You can optionally force a refresh of all dataset impacts with the force_refresh parameter.
     """
     # Get JWT from request
     jwt = None
@@ -266,13 +270,68 @@ async def file_url_endpoint(
     return {"download_url": url}
 
 @router.post("/{dataset_id:path}/follow", status_code=204)
-async def follow_endpoint(request: Request, dataset_id: str, user: User = Depends(current_user)):
-    jwt = request.headers.get("authorization", "").split(" ", 1)[1]
-    await follow_dataset(user.id, dataset_id, jwt)
+async def follow_endpoint(request: Request, dataset_id: str, user: User = Depends(get_current_user)):
+    """Follow a dataset for the authenticated user."""
+    await follow_dataset(user_id=user.id, dataset_id=dataset_id, jwt=request.headers.get("authorization").split(" ")[1])
     return Response(status_code=204)
 
 @router.delete("/{dataset_id:path}/follow", status_code=204)
-async def unfollow_endpoint(request: Request, dataset_id: str, user: User = Depends(current_user)):
-    jwt = request.headers.get("authorization", "").split(" ", 1)[1]
-    await unfollow_dataset(user.id, dataset_id, jwt)
+async def unfollow_endpoint(request: Request, dataset_id: str, user: User = Depends(get_current_user)):
+    """Unfollow a dataset for the authenticated user."""
+    await unfollow_dataset(user_id=user.id, dataset_id=dataset_id, jwt=request.headers.get("authorization").split(" ")[1])
     return Response(status_code=204)
+
+@router.post("/", response_model=Dataset, status_code=201)
+async def create_dataset(
+    dataset_in: DatasetCreate, 
+    current_user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_core_settings)
+):
+    print(f"User {current_user.id} creating dataset {dataset_in.name}")
+    return Dataset(**dataset_in.model_dump(), id=123, owner_id=current_user.id)
+
+@router.get("/", response_model=List[Dataset])
+async def list_datasets(
+    skip: int = 0, 
+    limit: int = Query(default=10, le=100),
+    current_user: User = Depends(get_current_user)
+):
+    print(f"User {current_user.id} listing datasets.")
+    return [
+        Dataset(id=1, name="Dataset 1", description="Description 1", owner_id=current_user.id),
+        Dataset(id=2, name="Dataset 2", description="Description 2", owner_id=current_user.id)
+    ]
+
+@router.get("/{dataset_id}", response_model=Dataset)
+async def get_dataset(
+    dataset_id: int, 
+    current_user: User = Depends(get_current_user)
+):
+    print(f"User {current_user.id} getting dataset {dataset_id}.")
+    if dataset_id == 1:
+        return Dataset(id=1, name="Dataset 1", description="Description 1", owner_id=current_user.id)
+    raise HTTPException(status_code=404, detail="Dataset not found")
+
+@router.put("/{dataset_id}", response_model=Dataset)
+async def update_dataset(
+    dataset_id: int, 
+    dataset_in: DatasetUpdate, 
+    current_user: User = Depends(get_current_user)
+):
+    print(f"User {current_user.id} updating dataset {dataset_id} with data: {dataset_in}")
+    if dataset_id == 1:
+        existing_data = Dataset(id=1, name="Dataset 1", description="Description 1", owner_id=current_user.id).model_dump()
+        update_data = dataset_in.model_dump(exclude_unset=True)
+        updated_data = {**existing_data, **update_data}
+        return Dataset(**updated_data)
+    raise HTTPException(status_code=404, detail="Dataset not found")
+
+@router.delete("/{dataset_id}", status_code=204)
+async def delete_dataset(
+    dataset_id: int, 
+    current_user: User = Depends(get_current_user)
+):
+    print(f"User {current_user.id} deleting dataset {dataset_id}.")
+    if dataset_id == 1:
+        return
+    raise HTTPException(status_code=404, detail="Dataset not found")

@@ -8,6 +8,10 @@ httpx>=0.24.1
 email-validator>=2.0.0  # Required by pydantic for email validation
 python-jose>=3.3.0  # Required for JWT handling
 
+# Task processing
+celery>=5.3.4
+flower>=2.0.1  # Celery monitoring
+
 # Hugging Face integration
 huggingface_hub>=0.17.0
 sentry-sdk>=1.28.1
@@ -17,8 +21,23 @@ postgrest>=0.10.6
 supabase>=1.0.3
 
 # Caching and async processing
-redis>=5.0.0
+redis>=4.5.0,<5.0.0
+hiredis>=2.0.0  # C accelerator for redis-py
 setuptools>=65.5.1  # Required by some redis features
+
+# Monitoring and observability
+prometheus-client>=0.17.1
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+# Fixed version for compatibility
+opentelemetry-exporter-prometheus==0.54b1
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.1
+fakeredis>=2.20.0
+pytest-cov>=4.1.0
+freezegun>=1.2.2
 
 # Development dependencies
 python-dotenv>=1.0.0 

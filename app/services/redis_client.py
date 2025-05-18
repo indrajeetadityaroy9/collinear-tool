@@ -8,6 +8,7 @@ import logging
 
 import redis.asyncio as redis
 from pydantic import BaseModel
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 
@@ -23,27 +24,42 @@ _redis_pool = None
 # Default cache expiration (12 hours)
 DEFAULT_CACHE_EXPIRY = 60 * 60 * 12
 
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=1, max=10))
 async def get_redis_pool() -> redis.Redis:
-    """Get or create Redis connection pool."""
+    """Get or create Redis connection pool with retry logic."""
     global _redis_pool
     
     if _redis_pool is None:
         # Get Redis configuration from settings
-        redis_url = settings.redis_url or "redis://localhost:6379/0"
+        redis_url = settings.REDIS_URL or "redis://localhost:6379/0"
         
-        # Create connection pool with reasonable defaults
-        _redis_pool = redis.ConnectionPool.from_url(
-            redis_url,
-            max_connections=10,
-            decode_responses=True
-        )
-        log.info(f"Created Redis connection pool with URL: {redis_url}")
+        try:
+            # Create connection pool with reasonable defaults
+            _redis_pool = redis.ConnectionPool.from_url(
+                redis_url,
+                max_connections=10,
+                decode_responses=True,
+                health_check_interval=5,
+                socket_connect_timeout=5,
+                socket_keepalive=True,
+                retry_on_timeout=True
+            )
+            log.info(f"Created Redis connection pool with URL: {redis_url}")
+        except Exception as e:
+            log.error(f"Error creating Redis connection pool: {e}")
+            raise
     
     return redis.Redis(connection_pool=_redis_pool)
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=5))
 async def get_redis() -> redis.Redis:
-    """Get Redis client from pool."""
-    return await get_redis_pool()
+    """Get Redis client from pool with retry logic."""
+    try:
+        redis_client = await get_redis_pool()
+        return redis_client
+    except Exception as e:
+        log.error(f"Error getting Redis client: {e}")
+        raise
 
 # Cache key generation
 def generate_cache_key(prefix: str, *args: Any) -> str:

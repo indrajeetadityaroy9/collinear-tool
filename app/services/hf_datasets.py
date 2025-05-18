@@ -42,7 +42,7 @@ DATASET_INFO_ENDPOINT = "https://datasets-server.huggingface.co/info?dataset={da
 DATASET_METRICS_ENDPOINT = "https://huggingface.co/api/datasets/{dataset_id}"
 
 def get_hf_token():
-    token = settings.hf_api_token.get_secret_value() if settings.hf_api_token else None
+    token = settings.HF_API_TOKEN.get_secret_value() if hasattr(settings, 'HF_API_TOKEN') and settings.HF_API_TOKEN else None
     log.info(f"Using HuggingFace token: {token[:6]}..." if token else "No HuggingFace token set!")
     return token
 

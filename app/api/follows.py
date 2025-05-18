@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
 
 from app.services import follows as service
-from app.api.dependencies import current_user, User
+from app.api.dependencies import get_current_user, User
 
 
 router = APIRouter(
@@ -26,7 +26,7 @@ class FollowOut(BaseModel):
 @router.get("", response_model=list[FollowOut])
 async def list_my_follows(
     request: Request,
-    user: User = Depends(current_user),
+    user: User = Depends(get_current_user),
 ):
     """
     Return the dataset IDs the authenticated user is following.
@@ -43,7 +43,7 @@ async def list_my_follows(
 async def follow_dataset(
     request: Request,
     payload: FollowIn,
-    user: User = Depends(current_user),
+    user: User = Depends(get_current_user),
 ):
     """
     Follow a dataset. 204 No Content on success.
@@ -62,7 +62,7 @@ async def follow_dataset(
 async def unfollow_dataset(
     request: Request,
     dataset_id: str,
-    user: User = Depends(current_user),
+    user: User = Depends(get_current_user),
 ):
     """
     Un-follow a dataset. 204 No Content whether or not the relationship existed.

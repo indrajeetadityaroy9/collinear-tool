@@ -1,6 +1,6 @@
 from enum import Enum
 from pydantic import BaseModel, Field
-from typing import Dict, Literal, Optional
+from typing import Dict, Literal, Optional, List
 
 # Define the impact level as an enum for better type safety
 class ImpactLevel(str, Enum):
@@ -42,4 +42,31 @@ class DatasetInfo(BaseModel):
     class Config:
         extra = "allow"  # Allow extra fields from the API
 
-__all__ = ["ImpactLevel", "ImpactAssessment", "DatasetInfo", "DatasetMetrics"] 
+# Define base dataset schema for shared attributes
+class DatasetBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
+    
+# Define schema for dataset creation
+class DatasetCreate(DatasetBase):
+    # Add fields specific to creation
+    # For example, file paths or URLs
+    files: Optional[List[str]] = None
+
+# Define schema for dataset update
+class DatasetUpdate(DatasetBase):
+    name: Optional[str] = None  # Make fields optional for updates
+    
+# Define complete dataset schema with all fields
+class Dataset(DatasetBase):
+    id: int  # or str depending on your ID format
+    owner_id: str  # Assuming user IDs are strings
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    
+    class Config:
+        orm_mode = True  # For ORM compatibility if using an ORM
+
+__all__ = ["ImpactLevel", "ImpactAssessment", "DatasetInfo", "DatasetMetrics", 
+           "Dataset", "DatasetCreate", "DatasetUpdate"] 

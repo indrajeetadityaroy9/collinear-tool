@@ -1,104 +1,62 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Annotated
 
-import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, status
 
-from gotrue.errors import AuthApiError
-
-from app.api.dependencies import current_user, User
+from app.api.dependencies import get_current_user, get_user_service, get_auth_service, get_bearer_token
+from app.schemas.user import User
 from app.schemas.auth import SessionOut, RefreshIn, UpdateUserIn
-from app.core.config import settings
-from app.core.supabase import get_client
+from app.services.auth_service import AuthService, UserService
 from app.services.follows import list_followed_datasets
 
 router = APIRouter(prefix="/users", tags=["users"])
-client = get_client()                  
 
-def _session_to_out(s) -> SessionOut:
-    return SessionOut(
-        access_token=s.access_token,
-        expires_at=datetime.fromtimestamp(s.expires_at, tz=timezone.utc),
-    )
-
-@router.get("/me", summary="Return the authenticated user")
-async def read_current_user(user: User = Depends(current_user)):
-    return {"id": user.id, "email": user.email}
-
+@router.get("/me", summary="Return the authenticated user", response_model=User)
+async def read_current_user_endpoint(
+    current_user_data: User = Depends(get_current_user),
+    user_service: UserService = Depends(get_user_service)
+):
+    return await user_service.get_me(current_user_data)
 
 @router.patch(
     "/me",
     summary="Update e-mail and/or password",
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def update_me(
+async def update_me_endpoint(
     payload: UpdateUserIn,
-    authorization: Annotated[str, Header(alias="Authorization")] = ...,
+    token: str = Depends(get_bearer_token),
+    auth_service: AuthService = Depends(get_auth_service),
 ):
-    body: dict = {}
-    if payload.email:
-        body["email"] = payload.email
-    if payload.password:
-        body["password"] = payload.password.get_secret_value()
-    if not body:
-        raise HTTPException(400, "Nothing to update")
-
-    token = authorization.split(" ", 1)[1]
-    url = f"{settings.supabase_url}/auth/v1/user"
-    headers = {
-        "apikey": settings.supabase_anon_key.get_secret_value(),
-        "Authorization": f"Bearer {token}",
-    }
-
-    async with httpx.AsyncClient(timeout=3) as http:
-        r = await http.put(url, headers=headers, json=body)
-
-    if r.status_code != 200:
-        raise HTTPException(400, r.json().get("msg", "Update failed"))
-
-    return {"detail": "Profile updated — please log in again."}
+    await auth_service.update_user_profile(token=token, payload=payload)
+    return {"detail": "Profile update requested. If successful, you may need to log in again."}
 
 @router.post(
     "/refresh",
     summary="Exchange refresh token for a new access token",
     response_model=SessionOut,
 )
-async def refresh_token(body: RefreshIn):
-    try:
-        res = client.auth.refresh_session(body.refresh_token)
-    except AuthApiError as e:
-        raise HTTPException(401, e.message)
-    return _session_to_out(res.session)
+async def refresh_token_endpoint(
+    body: RefreshIn,
+    auth_service: AuthService = Depends(get_auth_service)
+):
+    return await auth_service.refresh_auth_session(body.refresh_token)
 
 @router.post(
     "/logout",
     summary="Invalidate current session",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-async def logout(
-    authorization: Annotated[str, Header(alias="Authorization")] = ...,
+async def logout_endpoint(
+    token: str = Depends(get_bearer_token),
+    auth_service: AuthService = Depends(get_auth_service),
 ):
-    if not authorization.lower().startswith("bearer "):
-        raise HTTPException(401, "Invalid auth header")
-
-    access_token = authorization.split(" ", 1)[1]
-
-    url = f"{settings.supabase_url}/auth/v1/logout"
-    headers = {
-        "apikey": settings.supabase_anon_key.get_secret_value(),
-        "Authorization": f"Bearer {access_token}",
-    }
-
-    async with httpx.AsyncClient(timeout=3) as http:
-        await http.post(url, headers=headers)
+    await auth_service.logout_user(token=token)
+    return
 
 @router.get("/me/follows")
 async def my_follows_endpoint(
-    limit: int | None = Query(None, ge=1),
-    offset: int = 0,
-    user: User = Depends(current_user),
+    user: User = Depends(get_current_user),
 ):
-    ids = await list_followed_datasets(user.id, limit=limit, offset=offset)
-    return ids
+    return {"detail": "/me/follows endpoint needs refactoring with FollowsService"}

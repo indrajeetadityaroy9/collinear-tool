@@ -1,0 +1,9 @@
+#!/bin/bash
+
+set -o errexit
+set -o nounset
+
+echo "Starting legacy worker..."
+
+# Start the legacy worker
+exec python workers.py 

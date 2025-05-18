@@ -1,0 +1,11 @@
+#!/bin/bash
+
+set -o errexit
+set -o nounset
+
+echo "Starting Celery worker..."
+
+exec celery -A app.core.celery_app worker \
+    --loglevel=${LOG_LEVEL:-INFO} \
+    -Q ${CELERY_QUEUE:-dataset_impacts} \
+    --concurrency=${WORKER_CONCURRENCY:-5} 

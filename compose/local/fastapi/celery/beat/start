@@ -1,0 +1,7 @@
+#!/bin/bash
+
+set -o errexit
+set -o nounset
+echo "Starting Celery beat scheduler..."
+rm -f './celerybeat.pid'
+exec celery -A app.core.celery_app beat --loglevel=${LOG_LEVEL:-INFO} 

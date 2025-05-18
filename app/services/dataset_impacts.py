@@ -10,7 +10,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List, Tuple
 
 from app.schemas.dataset import ImpactLevel
-from app.supabase import require_supabase
+from app.supabase import get_new_supabase_client
 from app.core.config import settings
 from app.services.redis_client import (
     cache_get, 
@@ -22,6 +22,14 @@ from app.services.redis_client import (
     get_task_result,
     generate_cache_key
 )
+
+# Import Celery tasks conditionally to avoid circular imports
+# and maintain compatibility with both implementations
+try:
+    from app.tasks.dataset_tasks import process_dataset_impact, process_dataset_batch
+    CELERY_AVAILABLE = True
+except ImportError:
+    CELERY_AVAILABLE = False
 
 log = logging.getLogger(__name__)
 
@@ -41,11 +49,14 @@ async def save_dataset_impact(dataset_id: str, impact_data: Dict[str, Any], jwt:
     Args:
         dataset_id: The unique identifier of the dataset
         impact_data: Impact assessment data with metrics and impact level
-        jwt: Optional JWT for authenticated access
+        jwt: Optional JWT for authenticated access (sets user context if provided)
     """
+    db = None  # Initialize db to None for finally block
     try:
-        # Use service key for authenticated access
-        db = require_supabase(jwt)
+        # Use anon/service client by default, or set user session if JWT is provided
+        db = get_new_supabase_client(settings_override=settings)
+        if jwt:
+            db.auth.set_session(access_token=jwt, refresh_token="dummy_refresh_token")
         
         # Convert enum to string if needed
         impact_level = impact_data["impact_level"]
@@ -96,6 +107,9 @@ async def save_dataset_impact(dataset_id: str, impact_data: Dict[str, Any], jwt:
         log.error(f"Error saving impact for {dataset_id}: {e}")
         # Don't re-raise the exception to avoid breaking the API response
         # Just log it and continue
+    finally:
+        if db:
+            await db.auth.close() # Close session if it was opened
 
 async def get_stored_dataset_impact(dataset_id: str, jwt: str = None, use_cache: bool = True) -> Optional[Dict[str, Any]]:
     """
@@ -103,7 +117,7 @@ async def get_stored_dataset_impact(dataset_id: str, jwt: str = None, use_cache:
     
     Args:
         dataset_id: The unique identifier of the dataset
-        jwt: Optional JWT for authenticated access
+        jwt: Optional JWT for authenticated access (sets user context if provided)
         use_cache: Whether to use Redis cache if available
         
     Returns:
@@ -118,9 +132,12 @@ async def get_stored_dataset_impact(dataset_id: str, jwt: str = None, use_cache:
             return cached_data
     
     # Otherwise get from database
-    db = require_supabase(jwt)
-    
+    db = None # Initialize db to None for finally block
     try:
+        db = get_new_supabase_client(settings_override=settings)
+        if jwt:
+            db.auth.set_session(access_token=jwt, refresh_token="dummy_refresh_token")
+
         result = await asyncio.to_thread(
             lambda: db.table("dataset_impacts")
             .select("*")
@@ -142,6 +159,9 @@ async def get_stored_dataset_impact(dataset_id: str, jwt: str = None, use_cache:
     except Exception as e:
         log.error(f"Error retrieving impact for {dataset_id}: {e}")
         return None
+    finally:
+        if db:
+            await db.auth.close()
 
 async def is_impact_assessment_stale(stored_impact: Dict[str, Any], max_age_days: int = 7) -> bool:
     """
@@ -172,7 +192,7 @@ async def list_datasets_by_impact(impact_level: ImpactLevel, limit: int = 100, j
     Args:
         impact_level: The impact level to filter by
         limit: Maximum number of results to return
-        jwt: Optional JWT for authenticated access
+        jwt: Optional JWT for authenticated access (sets user context if provided)
         use_cache: Whether to use Redis cache if available
         
     Returns:
@@ -187,9 +207,12 @@ async def list_datasets_by_impact(impact_level: ImpactLevel, limit: int = 100, j
             return cached_data
     
     # Otherwise get from database
-    db = require_supabase(jwt)
-    
+    db = None # Initialize db to None for finally block
     try:
+        db = get_new_supabase_client(settings_override=settings)
+        if jwt:
+            db.auth.set_session(access_token=jwt, refresh_token="dummy_refresh_token")
+
         result = await asyncio.to_thread(
             lambda: db.table("dataset_impacts")
             .select("dataset_id")
@@ -213,6 +236,9 @@ async def list_datasets_by_impact(impact_level: ImpactLevel, limit: int = 100, j
     except Exception as e:
         log.error(f"Error retrieving datasets by impact level {impact_level}: {e}")
         return []
+    finally:
+        if db:
+            await db.auth.close()
 
 async def populate_impact_assessments(dataset_ids: List[str], jwt: str = None) -> Dict[str, Any]:
     """
@@ -223,14 +249,30 @@ async def populate_impact_assessments(dataset_ids: List[str], jwt: str = None) -
     
     Args:
         dataset_ids: List of dataset IDs to assess
-        jwt: Optional JWT for authenticated access
+        jwt: Optional JWT for authenticated access (used by individual save_dataset_impact calls)
         
     Returns:
         Dictionary with batch information and task ID
     """
-    # Check if batch is small enough to process synchronously
-    if len(dataset_ids) <= 5:
-        # Process small batches synchronously
+    # Try to use Celery if available, otherwise use direct Redis queue
+    if CELERY_AVAILABLE and len(dataset_ids) > 5:
+        # Use Celery for larger batches
+        log.info(f"Using Celery for batch processing of {len(dataset_ids)} datasets")
+        batch_id = str(uuid.uuid4())
+        
+        # Schedule the batch task
+        # The JWT is passed to the Celery task, which will then pass it to save_dataset_impact
+        task = process_dataset_batch.delay(batch_id, dataset_ids, False, jwt)
+        
+        return {
+            "batch_id": batch_id,
+            "task_id": task.id,
+            "status": "scheduled",
+            "dataset_count": len(dataset_ids),
+            "message": f"Scheduled batch processing of {len(dataset_ids)} datasets using Celery"
+        }
+    elif len(dataset_ids) <= 5:
+        # Process small batches synchronously for both implementations
         from app.services.hf_datasets import get_dataset_impact_async
         
         results = {}
@@ -248,113 +290,120 @@ async def populate_impact_assessments(dataset_ids: List[str], jwt: str = None) -
                     results[dataset_id] = impact_data["impact_level"].value
                     log.info(f"Saved impact for {dataset_id}: {impact_data['impact_level'].value}")
                 except Exception as e:
-                    log.error(f"Error calculating impact for {dataset_id}: {e}")
-                    errors.append((dataset_id, str(e)))
+                    log.error(f"Error processing dataset {dataset_id}: {e}")
+                    errors.append({"dataset_id": dataset_id, "error": str(e)})
         
         # Create tasks for all datasets
         tasks = [process_dataset(dataset_id) for dataset_id in dataset_ids]
         
-        # Run all tasks
+        # Wait for all tasks to complete
         await asyncio.gather(*tasks)
         
-        if errors:
-            log.warning(f"Encountered {len(errors)} errors during impact assessment population")
-        
         return {
-            "processed_synchronously": True,
-            "datasets": len(dataset_ids),
-            "successful": len(results),
+            "status": "completed",
+            "processed": len(results),
             "errors": len(errors),
-            "results": results
+            "results": results,
+            "error_details": errors if errors else None
         }
     else:
-        # For larger batches, use the worker queue
-        if not settings.enable_redis_cache:
-            # Fallback to synchronous processing if Redis isn't available
-            log.warning("Redis not available, processing batch synchronously")
-            return await populate_impact_assessments(dataset_ids[:5], jwt)
-            
-        # Split into batches based on configuration
-        batch_size = settings.worker_batch_size
-        
-        # Generate a batch ID
-        batch_id = f"impact-batch-{uuid.uuid4()}"
+        # Use direct Redis queue for larger batches when Celery is not available
+        log.info(f"Using Redis queue for batch processing of {len(dataset_ids)} datasets")
+        batch_id = str(uuid.uuid4())
         
         # Prepare task payload
         payload = {
             "batch_id": batch_id,
             "dataset_ids": dataset_ids,
-            "jwt": jwt,
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "jwt": jwt
         }
         
-        # Enqueue the batch job
+        # Enqueue task
         success = await enqueue_task(DATASET_IMPACT_QUEUE, batch_id, payload)
         
         if not success:
-            log.error(f"Failed to enqueue batch job {batch_id}")
-            return {
-                "status": "error",
-                "message": "Failed to enqueue batch job",
-                "batch_id": batch_id
-            }
+            raise Exception("Failed to enqueue batch processing task")
             
         return {
-            "status": "accepted",
-            "message": f"Processing {len(dataset_ids)} datasets in the background",
             "batch_id": batch_id,
-            "datasets": len(dataset_ids)
+            "status": "scheduled",
+            "dataset_count": len(dataset_ids),
+            "message": f"Scheduled batch processing of {len(dataset_ids)} datasets using Redis queue"
         }
-
+        
 async def get_batch_status(batch_id: str) -> Dict[str, Any]:
     """
-    Get status of a batch impact assessment job.
+    Get the status of a batch dataset impact assessment job.
     
     Args:
-        batch_id: The batch ID to check
+        batch_id: The batch ID to check status for
         
     Returns:
         Dictionary with batch status information
     """
-    if not settings.enable_redis_cache:
-        return {
-            "status": "unknown",
-            "message": "Redis not available, cannot check batch status"
-        }
+    # Try both implementations for maximum compatibility
+    
+    # First, check Redis cache for batch progress
+    cache_key = generate_cache_key("batch:progress", batch_id)
+    progress = await cache_get(cache_key)
+    
+    if progress:
+        return progress
+    
+    # If not in cache, check Celery task status if available
+    if CELERY_AVAILABLE:
+        from celery.result import AsyncResult
         
-    # Check task status
+        # Look for a batch task with this ID
+        task_result = AsyncResult(f"celery-task-meta-{batch_id}")
+        
+        if task_result.state:
+            # Task exists in Celery
+            state = task_result.state
+            
+            if state == states.SUCCESS:
+                # If task completed, return the result
+                return task_result.result
+            elif state in (states.PENDING, states.STARTED):
+                # If task is still processing
+                return {
+                    "batch_id": batch_id,
+                    "status": "processing",
+                    "message": f"Batch is still being processed (state: {state})"
+                }
+            else:
+                # Failed or other state
+                return {
+                    "batch_id": batch_id,
+                    "status": "error",
+                    "state": state,
+                    "error": str(task_result.result) if task_result.result else "Unknown error"
+                }
+    
+    # Lastly, check direct Redis task status
     status = await get_task_status(DATASET_IMPACT_QUEUE, batch_id)
     
     if not status:
         return {
-            "status": "unknown",
-            "message": f"No status found for batch {batch_id}"
+            "batch_id": batch_id,
+            "status": "not_found",
+            "message": f"No batch with ID {batch_id} found"
         }
-        
-    # If task is complete, get the result
+    
     if status == "complete":
+        # Get completed task result
         result = await get_task_result(DATASET_IMPACT_QUEUE, batch_id)
         if result:
             return {
-                "status": "complete",
                 "batch_id": batch_id,
+                "status": "completed",
                 **result
             }
-            
-    # Check for progress information
-    progress = await cache_get(f"batch:progress:{batch_id}")
     
-    if progress:
-        return {
-            "status": "processing" if status == "pending" else status,
-            "batch_id": batch_id,
-            **progress
-        }
-        
-    # Default response
+    # Task is still pending
     return {
-        "status": status,
         "batch_id": batch_id,
+        "status": status,
         "message": f"Batch {batch_id} is {status}"
     }
 
