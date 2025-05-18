@@ -15,7 +15,6 @@ from app.services.hf_datasets import (
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
 @router.get("")
-@router.get("")
 async def list_datasets_endpoint(
     limit: int | None = Query(None, ge=1),
     search: str | None = None,
