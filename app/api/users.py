@@ -89,3 +89,9 @@ async def logout(
 
     async with httpx.AsyncClient(timeout=3) as http:
         await http.post(url, headers=headers)
+
+@router.get("/me/follows")
+async def my_follows_endpoint(limit: int | None = Query(None, ge=1), offset: int = 0, current_user: User = Depends(get_user), session: AsyncSession = Depends(get_db)):
+    rows = await list_followed_datasets(session, user_id=current_user.id, limit=limit, offset=offset)
+    # shape the JSON however you like; below we just return dataset ids
+    return [row.dataset_id for row in rows]

@@ -1,7 +1,10 @@
-from dataclasses import dataclass
+from sqlalchemy import MetaData, Table, Column
+from sqlalchemy.dialects.postgresql import UUID
+from app.db import Base, engine
 
-@dataclass
-class User:
-    id: str
-    email: str
-    
+class AuthUser(Base):
+    __tablename__   = "users"
+    __table_args__  = {"schema": "auth"}
+    id = Column(UUID, primary_key=True)
+
+    __mapper_args__ = {"primary_key": [id]}

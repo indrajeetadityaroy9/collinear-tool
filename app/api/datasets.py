@@ -42,3 +42,13 @@ async def file_url_endpoint(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return {"download_url": url}
+
+@router.post("/{dataset_id:path}/follow", status_code=204)
+async def follow_endpoint(dataset_id: str, current_user: User = Depends(get_user), session: AsyncSession = Depends(get_db)):
+    await follow_dataset(session, user_id=current_user.id, dataset_id=dataset_id)
+    return Response(status_code=204)
+
+@router.delete("/{dataset_id:path}/follow", status_code=204)
+async def unfollow_endpoint(dataset_id: str, current_user: User = Depends(get_user), session: AsyncSession = Depends(get_db)):
+    await unfollow_dataset(session, user_id=current_user.id, dataset_id=dataset_id)
+    return Response(status_code=204)
