@@ -9,6 +9,7 @@ RUNTIME_PKGS=(
   python-dotenv
   httpx
   anyio
+  huggingface_hub
 )
 DEV_PKGS=(ruff mypy pytest pytest-asyncio pre-commit)
 

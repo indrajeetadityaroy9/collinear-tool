@@ -15,20 +15,6 @@ from huggingface_hub.utils import RepositoryNotFoundError, RevisionNotFoundError
 log = logging.getLogger(__name__)
 api = HfApi()
 
-def _get_repo_size(dataset_id: str) -> int:
-    """
-    Return the total size of the dataset repository in **bytes**.
-    """
-    try:
-        repo_info = api.repo_info(repo_id=dataset_id, repo_type="dataset")
-        return repo_info.size 
-    except RepositoryNotFoundError as exc:
-        raise ValueError(f"Dataset '{dataset_id}' not found") from exc
-
-
-async def get_repo_size_async(dataset_id: str) -> int:
-    return await anyio.to_thread.run_sync(_get_repo_size, dataset_id)
-
 def _dataset_info_to_dict(info: DatasetInfo) -> dict[str, Any]:
     """Keep only JSON-serialisable bits we care about."""
     return {
@@ -40,14 +26,32 @@ def _dataset_info_to_dict(info: DatasetInfo) -> dict[str, Any]:
         "sha": info.sha,
     }
 
-
 async def list_datasets_async(
     limit: int | None = None,
     search: str | None = None,
+    include_size: bool = False,
 ) -> list[dict[str, Any]]:
     def _worker() -> list[dict[str, Any]]:
-        infos = api.list_datasets(limit=limit, search=search)
-        return [_dataset_info_to_dict(i) for i in infos]
+        dataset_infos = api.list_datasets(limit=limit, search=search)
+        results = []
+        
+        for info in dataset_infos:
+            data = _dataset_info_to_dict(info)
+            
+            if include_size:
+                try:
+                    detailed_info = api.dataset_info(
+                        repo_id=info.id,
+                        expand=["usedStorage"]
+                    )
+                    data["size_bytes"] = getattr(detailed_info, "usedStorage", 0)
+                except Exception as exc:
+                    log.warning(f"Failed to get size for dataset {info.id}: {exc}")
+                    data["size_bytes"] = 0
+            
+            results.append(data)
+        
+        return results
 
     return await anyio.to_thread.run_sync(_worker)
 
@@ -145,12 +149,10 @@ async def get_file_download_url_async(
     fn = functools.partial(_get_file_download_url, dataset_id, filename, revision)
     return await anyio.to_thread.run_sync(fn)
 
-
 __all__ = [
     "list_datasets_async",
     "commit_history_async",
     "list_repo_files_async",
-    "get_file_download_url_async",
-     "get_repo_size_async"
+    "get_file_download_url_async"
 ]
 

@@ -6,7 +6,9 @@ router = APIRouter(prefix="/health", tags=["health"])
 
 async def supabase_alive(timeout: float = 2.0) -> bool:
     url = f"{settings.supabase_url}/auth/v1/health"
-    headers = {"apikey": settings.supabase_anon_key}
+    headers = {
+        "apikey": settings.supabase_anon_key.get_secret_value()
+    }
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.get(url, headers=headers)

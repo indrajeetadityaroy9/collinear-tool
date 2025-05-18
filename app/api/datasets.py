@@ -3,17 +3,23 @@ from app.services.hf_datasets import (
     list_datasets_async,
     commit_history_async,
     list_repo_files_async,
-    get_file_download_url_async,
+    get_file_download_url_async
 )
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
 @router.get("")
+@router.get("")
 async def list_datasets_endpoint(
     limit: int | None = Query(None, ge=1),
     search: str | None = None,
+    with_size: bool = Query(False, description="Include total repo size (bytes)"),
 ):
-    return await list_datasets_async(limit=limit, search=search)
+    return await list_datasets_async(
+        limit=limit,
+        search=search,
+        include_size=with_size,
+    )
 
 @router.get("/{dataset_id:path}/commits")
 async def commit_history_endpoint(dataset_id: str):
@@ -36,11 +42,3 @@ async def file_url_endpoint(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return {"download_url": url}
-
-@router.get("/{dataset_id:path}/size")
-async def repo_size_endpoint(dataset_id: str):
-    try:
-        size = await get_repo_size_async(dataset_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    return {"size_bytes": size}
