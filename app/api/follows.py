@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import get_db
 
 from app.services import follows as service
 from app.api.dependencies import current_user, User
 
 
 router = APIRouter(
-    prefix="/api/follows",
+    prefix="/follows",
     tags=["follows"],
 )
 
@@ -24,7 +27,10 @@ class FollowOut(BaseModel):
 
 # ───────────────────────────────────────── endpoints ────────────────────────────────────────
 @router.get("", response_model=list[FollowOut])
-async def list_my_follows(user: User = Depends(current_user)):
+async def list_my_follows(
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_db),
+):
     """
     Return the dataset IDs the authenticated user is following.
     """
@@ -36,7 +42,11 @@ async def list_my_follows(user: User = Depends(current_user)):
     "",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-async def follow_dataset(payload: FollowIn, user: User = Depends(current_user)):
+async def follow_dataset(
+    payload: FollowIn,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_db),
+):
     """
     Follow a dataset. 204 No Content on success.
     """
@@ -50,7 +60,11 @@ async def follow_dataset(payload: FollowIn, user: User = Depends(current_user)):
     "/{dataset_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-async def unfollow_dataset(dataset_id: str, user: User = Depends(current_user)):
+async def unfollow_dataset(
+    dataset_id: str,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_db),
+):
     """
     Un-follow a dataset. 204 No Content whether or not the relationship existed.
     """
