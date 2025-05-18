@@ -1,1 +1,24 @@
- 
+# Core dependencies
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+tenacity>=8.2.2
+httpx>=0.24.1
+email-validator>=2.0.0  # Required by pydantic for email validation
+python-jose>=3.3.0  # Required for JWT handling
+
+# Hugging Face integration
+huggingface_hub>=0.17.0
+sentry-sdk>=1.28.1
+
+# Database
+postgrest>=0.10.6
+supabase>=1.0.3
+
+# Caching and async processing
+redis>=5.0.0
+setuptools>=65.5.1  # Required by some redis features
+
+# Development dependencies
+python-dotenv>=1.0.0 
