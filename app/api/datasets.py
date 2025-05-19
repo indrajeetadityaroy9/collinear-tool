@@ -7,11 +7,17 @@ from app.services.hf_datasets import (
     get_dataset_files,
     get_file_url,
     get_datasets_page_from_zset,
+    get_dataset_commits_async,
+    get_dataset_files_async,
+    get_file_url_async,
+    get_datasets_page_from_cache,
+    fetch_and_cache_all_datasets,
 )
-from app.services.redis_client import sync_cache_get
+from app.services.redis_client import cache_get
 import logging
 import time
 from fastapi.responses import JSONResponse
+import os
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 log = logging.getLogger(__name__)
@@ -59,7 +65,7 @@ def deduplicate_by_id(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 @router.get("/cache-status", response_model=CacheStatus)
 async def cache_status():
-    meta = sync_cache_get("hf:datasets:meta")
+    meta = await cache_get("hf:datasets:meta")
     last_update = meta["last_update"] if meta and "last_update" in meta else None
     total_items = meta["total_items"] if meta and "total_items" in meta else 0
     warming_up = not bool(total_items)
@@ -67,31 +73,38 @@ async def cache_status():
 
 @router.get("/", response_model=None)
 async def list_datasets(
-    page: int = Query(1, ge=1),
-    limit: int = Query(100, ge=1, le=1000),
-    search: Optional[str] = None,
-    impact_level: Optional[str] = Query(None, description="Filter by impact level (e.g., high, medium, low, not_available)"),
-    min_size: Optional[int] = Query(None, description="Minimum dataset size in bytes"),
+    limit: int = Query(10, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    search: str = Query(None, description="Search term for dataset id or description"),
+    sort_by: str = Query(None, description="Field to sort by (e.g., 'downloads', 'likes', 'created_at')"),
+    sort_order: str = Query("desc", regex="^(asc|desc)$", description="Sort order: 'asc' or 'desc'"),
 ):
-    # Fetch from Sorted Set + Hash for deduplication and performance
-    offset = (page - 1) * limit
-    result = await run_in_threadpool(get_datasets_page_from_zset, offset, limit, search)
+    # Fetch the full list from cache
+    result, status = get_datasets_page_from_cache(1000000, 0)  # get all for in-memory filtering
+    if status != 200:
+        return JSONResponse(result, status_code=status)
     items = result["items"]
-    # Server-side filtering
-    if impact_level:
-        items = [item for item in items if item.get("impact_level") == impact_level]
-    if min_size is not None:
-        def parse_size(val):
-            try:
-                return int(val)
-            except Exception:
-                return 0
-        items = [item for item in items if parse_size(item.get("size_bytes")) >= min_size]
-    # Paginate after filtering (deduplication is automatic)
-    start = 0
-    end = limit
-    page_items = items[start:end]
-    return JSONResponse(content={"total": len(items), "items": page_items, "page": page, "limit": limit})
+    # Filtering
+    if search:
+        items = [d for d in items if search.lower() in (d.get("id", "") + " " + str(d.get("description", "")).lower())]
+    # Sorting
+    if sort_by:
+        items = sorted(items, key=lambda d: d.get(sort_by) or 0, reverse=(sort_order == "desc"))
+    # Pagination
+    total = len(items)
+    page = items[offset:offset+limit]
+    total_pages = (total + limit - 1) // limit
+    current_page = (offset // limit) + 1
+    next_page = current_page + 1 if offset + limit < total else None
+    prev_page = current_page - 1 if current_page > 1 else None
+    return {
+        "total": total,
+        "current_page": current_page,
+        "total_pages": total_pages,
+        "next_page": next_page,
+        "prev_page": prev_page,
+        "items": page
+    }
 
 @router.get("/{dataset_id:path}/commits", response_model=List[CommitInfo])
 async def get_commits(dataset_id: str):
@@ -99,7 +112,7 @@ async def get_commits(dataset_id: str):
     Get commit history for a dataset.
     """
     try:
-        return await run_in_threadpool(get_dataset_commits, dataset_id)
+        return await get_dataset_commits_async(dataset_id)
     except Exception as e:
         log.error(f"Error fetching commits for {dataset_id}: {e}")
         raise HTTPException(status_code=404, detail=f"Could not fetch commits: {e}")
@@ -110,7 +123,7 @@ async def list_files(dataset_id: str):
     List files in a dataset.
     """
     try:
-        return await run_in_threadpool(get_dataset_files, dataset_id)
+        return await get_dataset_files_async(dataset_id)
     except Exception as e:
         log.error(f"Error listing files for {dataset_id}: {e}")
         raise HTTPException(status_code=404, detail=f"Could not list files: {e}")
@@ -120,12 +133,19 @@ async def get_file_url_endpoint(dataset_id: str, filename: str = Query(...), rev
     """
     Get download URL for a file in a dataset.
     """
-    url = await run_in_threadpool(get_file_url, dataset_id, filename, revision)
+    url = await get_file_url_async(dataset_id, filename, revision)
     return {"download_url": url}
 
 @router.get("/meta")
-def get_datasets_meta():
-    import redis, json
-    redis_client = redis.Redis(host="redis", port=6379, db=0, decode_responses=True)
-    meta = redis_client.get("hf:datasets:meta")
-    return json.loads(meta) if meta else {}
+async def get_datasets_meta():
+    meta = await cache_get("hf:datasets:meta")
+    return meta if meta else {}
+
+# Endpoint to trigger cache refresh manually (for admin/testing)
+@router.post("/datasets/refresh-cache")
+def refresh_cache():
+    token = os.environ.get("HUGGINGFACEHUB_API_TOKEN")
+    if not token:
+        return JSONResponse({"error": "HUGGINGFACEHUB_API_TOKEN not set"}, status_code=500)
+    count = fetch_and_cache_all_datasets(token)
+    return {"status": "ok", "cached": count}
