@@ -10,6 +10,7 @@ email-validator>=2.0.0  # Required by pydantic for email validation
 python-jose[cryptography]>=3.3.0
 bcrypt>=4.0.0
 passlib>=1.7.4
+mangum>=0.17.0  # For AWS Lambda/Vercel serverless
 
 # Task processing
 celery>=5.3.4

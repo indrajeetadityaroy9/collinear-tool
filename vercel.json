@@ -2,18 +2,19 @@
   "version": 2,
   "builds": [
     {
-      "src": "app/main.py",
+      "src": "api/index.py",
       "use": "@vercel/python",
       "config": {
         "maxLambdaSize": "100mb",
-        "runtime": "python3.9"
+        "runtime": "python3.9",
+        "installCommand": "pip install -r api/requirements.txt"
       }
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "app/main.py"
+      "dest": "/api/index.py"
     }
   ]
 } 
