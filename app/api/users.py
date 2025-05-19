@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, status
 
-from app.api.dependencies import get_current_user, get_user_service, get_auth_service, get_bearer_token
+from app.core.dependencies import get_current_user, get_user_service, get_auth_service, get_bearer_token
 from app.schemas.user import User
 from app.schemas.auth import SessionOut, RefreshIn, UpdateUserIn
 from app.services.auth_service import AuthService, UserService

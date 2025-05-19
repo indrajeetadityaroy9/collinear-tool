@@ -2,8 +2,10 @@ from fastapi import APIRouter, HTTPException, Query, Depends, Response, Request,
 from typing import List, Dict, Any, Optional
 import uuid
 from datetime import datetime, timezone
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-from app.api.dependencies import get_current_user, get_core_settings
+from app.core.dependencies import get_current_user, get_core_settings
 from app.services.follows import follow_dataset, unfollow_dataset
 from app.services.hf_datasets import (
     list_datasets_async,
@@ -21,10 +23,34 @@ from app.services.dataset_impacts import (
     populate_impact_assessments,
     get_batch_status
 )
-from app.schemas.dataset import ImpactAssessment, ImpactLevel, DatasetMetrics, Dataset, DatasetCreate, DatasetUpdate
+from app.services.dataset_combine import (
+    create_combined_dataset,
+    get_combined_dataset,
+    list_combined_datasets,
+    estimate_combined_impact
+)
+from app.schemas.dataset import (
+    ImpactAssessment, 
+    ImpactLevel, 
+    DatasetMetrics, 
+    Dataset, 
+    DatasetCreate, 
+    DatasetUpdate,
+    DatasetCombineRequest,
+    CombinedDataset,
+    list_combined_files
+)
 from app.core.config import settings, Settings
 from app.services.redis_client import cache_get, cache_set, generate_cache_key
 from app.schemas.user import User
+from app.supabase import get_new_supabase_client
+
+# Define a paginated response model
+class PaginatedResponse(BaseModel):
+    items: List[Dict[str, Any]]
+    count: int
+    limit: Optional[int] = None
+    offset: Optional[int] = None
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -34,18 +60,19 @@ DATASET_LIST_CACHE_KEY = "datasets:list"
 
 @router.get("")
 async def list_datasets_endpoint(
-    limit: int | None = Query(None, ge=1),
+    limit: int | None = Query(10, ge=1),
+    offset: int | None = Query(0, ge=0),
     search: str | None = None,
     with_size: bool = Query(False, description="Include total repo size (bytes)"),
     with_impact: bool = Query(False, description="Include dataset impact assessment"),
     use_stored_impacts: bool = Query(True, description="Use stored impact assessments from database when available"),
     skip_cache: bool = Query(False, description="Skip cache and force new data fetch")
-) -> List[Dict[str, Any]]:
+) -> PaginatedResponse:
     """
     List datasets with optional filtering and impact assessments.
     
     This endpoint supports:
-    - Pagination with limit parameter
+    - Pagination with limit and offset parameters
     - Text-based search filtering
     - Including impact assessments
     - Using pre-calculated impact assessments from database
@@ -56,6 +83,7 @@ async def list_datasets_endpoint(
         cache_key = generate_cache_key(
             DATASET_LIST_CACHE_KEY,
             str(limit),
+            str(offset),
             search or "all",
             str(with_size),
             str(with_impact),
@@ -65,22 +93,55 @@ async def list_datasets_endpoint(
         # Try to get from cache
         cached_data = await cache_get(cache_key)
         if cached_data:
-            return cached_data
+            return PaginatedResponse(**cached_data)
     
     # Fetch fresh data
     results = await list_datasets_async(
         limit=limit,
+        offset=offset,
         search=search,
         include_size=with_size,
         include_impact=with_impact,
         use_stored_impacts=use_stored_impacts,
+        count_total=True,  # Request total count
     )
+    
+    # If results is a dict with 'items' and 'count', use that structure
+    if isinstance(results, dict) and 'items' in results and 'count' in results:
+        # Make sure items is a list
+        if not isinstance(results['items'], list):
+            results['items'] = []
+        response_data = results
+    else:
+        # Otherwise, assume it's just a list of items and estimate the count
+        # Make sure results is not a coroutine by ensuring it's already awaited
+        if not isinstance(results, list):
+            # If somehow we got a coroutine, await it first (should not happen normally)
+            try:
+                import inspect
+                if inspect.iscoroutine(results):
+                    results = await results
+            except Exception as e:
+                # In case of any error, return an empty list for safety
+                results = []
+        
+        response_data = {
+            "items": results,
+            "count": len(results) + (offset or 0),  # Simple estimation, handle None offset
+        }
+    
+    # Add pagination metadata
+    response_data["limit"] = limit
+    response_data["offset"] = offset
+    
+    # Create paginated response
+    paginated_response = PaginatedResponse(**response_data)
     
     # Cache results
     if settings.ENABLE_REDIS_CACHE and not skip_cache:
-        await cache_set(cache_key, results, expire=DATASET_LIST_CACHE_TTL)
+        await cache_set(cache_key, paginated_response.dict(), expire=DATASET_LIST_CACHE_TTL)
     
-    return results
+    return paginated_response
 
 @router.get("/{dataset_id:path}/impact", response_model=ImpactAssessment)
 async def dataset_impact_endpoint(
@@ -247,13 +308,149 @@ async def get_batch_status_endpoint(
     """
     return await get_batch_status(batch_id)
 
+@router.post("/combined", response_model=CombinedDataset, status_code=202)
+async def create_combined_dataset_endpoint(
+    request: Request,
+    combine_request: DatasetCombineRequest,
+    user: User = Depends(get_current_user)
+) -> CombinedDataset:
+    """
+    Create a new combined dataset from multiple source datasets.
+    
+    This endpoint allows users to combine multiple datasets using different strategies:
+    - "merge": Combines all datasets (union)
+    - "intersect": Only keeps data present in all datasets (intersection)
+    - "filter": Applies filters to a base dataset
+    
+    The process runs asynchronously and the combined dataset will be available
+    when processing is complete.
+    """
+    # Get JWT from request for database operations
+    jwt = None
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        jwt = auth_header.split(" ", 1)[1]
+    
+    # Create the combined dataset
+    combined_dataset = await create_combined_dataset(
+        combine_request=combine_request,
+        user_id=user.id,
+        jwt=jwt
+    )
+    
+    return combined_dataset
+
+@router.get("/combined", response_model=List[CombinedDataset])
+async def list_combined_datasets_endpoint(
+    request: Request,
+    limit: int = Query(100, ge=1, le=1000),
+    user: User = Depends(get_current_user)
+) -> List[CombinedDataset]:
+    """
+    List combined datasets created by the current user.
+    
+    This endpoint returns a list of combined datasets with their status
+    and basic information.
+    """
+    # Get JWT from request for database operations
+    jwt = None
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        jwt = auth_header.split(" ", 1)[1]
+    
+    # List combined datasets
+    combined_datasets = await list_combined_datasets(
+        user_id=user.id,
+        limit=limit,
+        jwt=jwt
+    )
+    
+    return combined_datasets
+
+@router.get("/combined/{combined_id}", response_model=CombinedDataset)
+async def get_combined_dataset_endpoint(
+    combined_id: str,
+    request: Request,
+    user: User = Depends(get_current_user)
+) -> CombinedDataset:
+    """
+    Get details of a specific combined dataset.
+    
+    This endpoint returns detailed information about a combined dataset,
+    including its processing status and metrics.
+    """
+    # Get JWT from request for database operations
+    jwt = None
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        jwt = auth_header.split(" ", 1)[1]
+    
+    # Get combined dataset
+    combined_dataset = await get_combined_dataset(combined_id, jwt)
+    
+    if not combined_dataset:
+        raise HTTPException(status_code=404, detail="Combined dataset not found")
+    
+    return combined_dataset
+
+@router.post("/estimate-combined-impact", response_model=Dict[str, Any])
+async def estimate_combined_impact_endpoint(
+    request: Request,
+    source_datasets: List[str],
+    strategy: str = Query("merge", description="Combination strategy: merge, intersect, or filter")
+) -> Dict[str, Any]:
+    """
+    Estimate the impact level and metrics of a combined dataset without creating it.
+    
+    This endpoint is useful for understanding the potential impact of
+    combining datasets before actually creating the combination.
+    """
+    # Validate strategy
+    valid_strategies = ["merge", "intersect", "filter"]
+    if strategy not in valid_strategies:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid strategy. Must be one of: {', '.join(valid_strategies)}"
+        )
+    
+    try:
+        # Estimate impact
+        impact_level, metrics = await estimate_combined_impact(source_datasets, strategy)
+        
+        # Return the estimate
+        return {
+            "impact_level": impact_level,
+            "metrics": {
+                "size_bytes": metrics.size_bytes,
+                "file_count": metrics.file_count,
+                "downloads": metrics.downloads,
+                "likes": metrics.likes
+            },
+            "strategy": strategy,
+            "source_datasets": source_datasets
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error estimating impact: {str(e)}")
+
 @router.get("/{dataset_id:path}/commits")
 async def commit_history_endpoint(dataset_id: str):
-    return await commit_history_async(dataset_id)
+    """Get the commit history for a dataset."""
+    try:
+        commits = await commit_history_async(dataset_id)
+        return commits
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching commit history: {str(e)}")
 
 @router.get("/{dataset_id:path}/files")
 async def list_files_endpoint(dataset_id: str):
-    return await list_repo_files_async(dataset_id)
+    """List files in a dataset."""
+    try:
+        files = await list_repo_files_async(dataset_id)
+        return files
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
 
 @router.get("/{dataset_id:path}/file-url")
 async def file_url_endpoint(
@@ -261,77 +458,248 @@ async def file_url_endpoint(
     filename: str,
     revision: str | None = None,
 ):
+    """Get download URL for a file in a dataset."""
     try:
         url = await get_file_download_url_async(
-            dataset_id, filename, revision=revision
+            dataset_id=dataset_id,
+            filename=filename,
+            revision=revision
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    return {"download_url": url}
+        return {"url": url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting file URL: {str(e)}")
 
 @router.post("/{dataset_id:path}/follow", status_code=204)
 async def follow_endpoint(request: Request, dataset_id: str, user: User = Depends(get_current_user)):
-    """Follow a dataset for the authenticated user."""
-    await follow_dataset(user_id=user.id, dataset_id=dataset_id, jwt=request.headers.get("authorization").split(" ")[1])
+    """Follow a dataset."""
+    await follow_dataset(user.id, dataset_id)
     return Response(status_code=204)
-
+    
 @router.delete("/{dataset_id:path}/follow", status_code=204)
 async def unfollow_endpoint(request: Request, dataset_id: str, user: User = Depends(get_current_user)):
-    """Unfollow a dataset for the authenticated user."""
-    await unfollow_dataset(user_id=user.id, dataset_id=dataset_id, jwt=request.headers.get("authorization").split(" ")[1])
+    """Unfollow a dataset."""
+    await unfollow_dataset(user.id, dataset_id) 
     return Response(status_code=204)
-
+    
 @router.post("/", response_model=Dataset, status_code=201)
 async def create_dataset(
     dataset_in: DatasetCreate, 
     current_user: User = Depends(get_current_user),
     settings: Settings = Depends(get_core_settings)
 ):
-    print(f"User {current_user.id} creating dataset {dataset_in.name}")
-    return Dataset(**dataset_in.model_dump(), id=123, owner_id=current_user.id)
+    """Create a new dataset."""
+    try:
+        # Create a new dataset with current timestamp
+        new_dataset = {
+            "name": dataset_in.name,
+            "description": dataset_in.description,
+            "tags": dataset_in.tags,
+            "owner_id": current_user.id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Get Supabase client
+        supabase = get_new_supabase_client()
+        
+        # Insert dataset into database
+        result = supabase.table("datasets").insert(new_dataset).execute()
+        
+        if not result.data or len(result.data) == 0:
+            raise HTTPException(status_code=500, detail="Failed to create dataset")
+            
+        # Return the created dataset
+        created_dataset = result.data[0]
+        
+        return Dataset(
+            id=created_dataset["id"],
+            name=created_dataset["name"],
+            description=created_dataset["description"],
+            tags=created_dataset["tags"],
+            owner_id=created_dataset["owner_id"],
+            created_at=created_dataset["created_at"],
+            updated_at=created_dataset["updated_at"]
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating dataset: {str(e)}")
 
-@router.get("/", response_model=List[Dataset])
+@router.get("/user", response_model=List[Dataset])
 async def list_datasets(
     skip: int = 0, 
     limit: int = Query(default=10, le=100),
     current_user: User = Depends(get_current_user)
 ):
-    print(f"User {current_user.id} listing datasets.")
-    return [
-        Dataset(id=1, name="Dataset 1", description="Description 1", owner_id=current_user.id),
-        Dataset(id=2, name="Dataset 2", description="Description 2", owner_id=current_user.id)
-    ]
+    """List datasets owned by current user."""
+    try:
+        # Get Supabase client
+        supabase = get_new_supabase_client()
+        
+        # Query datasets owned by current user
+        result = supabase.table("datasets") \
+            .select("*") \
+            .eq("owner_id", current_user.id) \
+            .range(skip, skip + limit - 1) \
+            .execute()
+        
+        if not result.data:
+            return []
+            
+        # Return list of datasets
+        return [
+            Dataset(
+                id=item["id"],
+                name=item["name"],
+                description=item["description"],
+                tags=item["tags"],
+                owner_id=item["owner_id"],
+                created_at=item["created_at"],
+                updated_at=item["updated_at"]
+            ) for item in result.data
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error listing datasets: {str(e)}")
 
-@router.get("/{dataset_id}", response_model=Dataset)
+@router.get("/user/{dataset_id}", response_model=Dataset)
 async def get_dataset(
     dataset_id: int, 
     current_user: User = Depends(get_current_user)
 ):
-    print(f"User {current_user.id} getting dataset {dataset_id}.")
-    if dataset_id == 1:
-        return Dataset(id=1, name="Dataset 1", description="Description 1", owner_id=current_user.id)
-    raise HTTPException(status_code=404, detail="Dataset not found")
+    """Get a specific dataset owned by the current user."""
+    try:
+        # Get Supabase client
+        supabase = get_new_supabase_client()
+        
+        # Query specific dataset by ID and owner
+        result = supabase.table("datasets") \
+            .select("*") \
+            .eq("id", dataset_id) \
+            .eq("owner_id", current_user.id) \
+            .execute()
+        
+        if not result.data or len(result.data) == 0:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+            
+        dataset = result.data[0]
+        
+        return Dataset(
+            id=dataset["id"],
+            name=dataset["name"],
+            description=dataset["description"],
+            tags=dataset["tags"],
+            owner_id=dataset["owner_id"],
+            created_at=dataset["created_at"],
+            updated_at=dataset["updated_at"]
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving dataset: {str(e)}")
 
-@router.put("/{dataset_id}", response_model=Dataset)
+@router.put("/user/{dataset_id}", response_model=Dataset)
 async def update_dataset(
     dataset_id: int, 
     dataset_in: DatasetUpdate, 
     current_user: User = Depends(get_current_user)
 ):
-    print(f"User {current_user.id} updating dataset {dataset_id} with data: {dataset_in}")
-    if dataset_id == 1:
-        existing_data = Dataset(id=1, name="Dataset 1", description="Description 1", owner_id=current_user.id).model_dump()
-        update_data = dataset_in.model_dump(exclude_unset=True)
-        updated_data = {**existing_data, **update_data}
-        return Dataset(**updated_data)
-    raise HTTPException(status_code=404, detail="Dataset not found")
+    """Update a dataset owned by the current user."""
+    try:
+        # Get Supabase client
+        supabase = get_new_supabase_client()
+        
+        # First check if dataset exists and belongs to user
+        check_result = supabase.table("datasets") \
+            .select("id") \
+            .eq("id", dataset_id) \
+            .eq("owner_id", current_user.id) \
+            .execute()
+        
+        if not check_result.data or len(check_result.data) == 0:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        
+        # Prepare update data, only including fields that are provided
+        update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+        
+        if dataset_in.name is not None:
+            update_data["name"] = dataset_in.name
+            
+        if dataset_in.description is not None:
+            update_data["description"] = dataset_in.description
+            
+        if dataset_in.tags is not None:
+            update_data["tags"] = dataset_in.tags
+        
+        # Update dataset
+        result = supabase.table("datasets") \
+            .update(update_data) \
+            .eq("id", dataset_id) \
+            .execute()
+        
+        if not result.data or len(result.data) == 0:
+            raise HTTPException(status_code=500, detail="Failed to update dataset")
+            
+        updated_dataset = result.data[0]
+        
+        return Dataset(
+            id=updated_dataset["id"],
+            name=updated_dataset["name"],
+            description=updated_dataset["description"],
+            tags=updated_dataset["tags"],
+            owner_id=updated_dataset["owner_id"],
+            created_at=updated_dataset["created_at"],
+            updated_at=updated_dataset["updated_at"]
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating dataset: {str(e)}")
 
-@router.delete("/{dataset_id}", status_code=204)
+@router.delete("/user/{dataset_id}", status_code=204)
 async def delete_dataset(
     dataset_id: int, 
     current_user: User = Depends(get_current_user)
 ):
-    print(f"User {current_user.id} deleting dataset {dataset_id}.")
-    if dataset_id == 1:
-        return
-    raise HTTPException(status_code=404, detail="Dataset not found")
+    """Delete a dataset owned by the current user."""
+    try:
+        # Get Supabase client
+        supabase = get_new_supabase_client()
+        
+        # First check if dataset exists and belongs to user
+        check_result = supabase.table("datasets") \
+            .select("id") \
+            .eq("id", dataset_id) \
+            .eq("owner_id", current_user.id) \
+            .execute()
+        
+        if not check_result.data or len(check_result.data) == 0:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        
+        # Delete dataset
+        supabase.table("datasets") \
+            .delete() \
+            .eq("id", dataset_id) \
+            .execute()
+        
+        return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting dataset: {str(e)}")
+
+@router.get("/combined/{combined_id}/files", response_model=List[str])
+async def list_combined_files_endpoint(
+    combined_id: str,
+    request: Request,
+    user: User = Depends(get_current_user)
+) -> List[str]:
+    """
+    List files in a combined dataset.
+    
+    This endpoint returns a list of files in the combined dataset storage.
+    """
+    # Get JWT from request for authentication
+    jwt = None
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        jwt = auth_header.split(" ", 1)[1]
+    
+    return await list_combined_files(combined_id, jwt)

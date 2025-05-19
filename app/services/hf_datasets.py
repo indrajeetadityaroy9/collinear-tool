@@ -16,7 +16,9 @@ from huggingface_hub.errors import HfHubHTTPError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from fastapi import HTTPException
 from app.core.config import settings
-from app.schemas.dataset import ImpactLevel
+from app.schemas.dataset_common import ImpactLevel, DatasetMetrics
+from app.services.redis_client import cache_get, cache_set, generate_cache_key
+from app.services.dataset_impacts import get_stored_dataset_impact
 
 log = logging.getLogger(__name__)
 api = HfApi()
@@ -40,6 +42,10 @@ LIKES_THRESHOLD_MEDIUM = 100  # Medium: 10-100 likes, High: > 100
 DATASET_INFO_ENDPOINT = "https://datasets-server.huggingface.co/info?dataset={dataset_id}"
 # Direct dataset endpoint to get metrics
 DATASET_METRICS_ENDPOINT = "https://huggingface.co/api/datasets/{dataset_id}"
+
+# Constants for dataset API access and caching
+HF_API_URL = "https://huggingface.co/api/datasets"
+DATASET_CACHE_TTL = 60 * 60  # Cache datasets list for 1 hour
 
 def get_hf_token():
     token = settings.HF_API_TOKEN.get_secret_value() if hasattr(settings, 'HF_API_TOKEN') and settings.HF_API_TOKEN else None
@@ -274,90 +280,87 @@ def get_dataset_metrics(dataset_info: dict) -> Tuple[int | None, int | None]:
 
 async def list_datasets_async(
     limit: int | None = None,
+    offset: int | None = 0,
     search: str | None = None,
     include_size: bool = False,
     include_impact: bool = False,
     use_stored_impacts: bool = True,
-) -> list[dict[str, Any]]:
+    count_total: bool = False,
+) -> dict[str, Any] | list[dict[str, Any]]:
     """
-    List datasets with optional filtering and impact assessments.
+    Asynchronously fetch datasets from the HuggingFace API with optional filtering and impact assessment.
     
     Args:
         limit: Maximum number of datasets to return
-        search: Optional search query
-        include_size: Whether to include dataset size information
-        include_impact: Whether to include impact assessment 
+        offset: Number of datasets to skip (for pagination)
+        search: Optional search string to filter datasets
+        include_size: Whether to include size information
+        include_impact: Whether to include impact assessment
         use_stored_impacts: Whether to use stored impact assessments from database
+        count_total: Whether to return total count in a paginated response format
         
     Returns:
-        List of dataset dictionaries with requested information
+        If count_total is True, returns a dict with 'items' (list of datasets) and 'count' (total number of matching datasets)
+        Otherwise, returns a list of dataset dictionaries
     """
-    # Dynamically import here to avoid circular imports
-    from app.services.dataset_impacts import get_stored_dataset_impact
-    
-    # Make this a regular function, not async
-    def _worker() -> list[dict[str, Any]]:
+    async def _worker() -> dict[str, Any] | list[dict[str, Any]]:
         # Use direct requests.get for HuggingFace API
-        api_limit = limit if limit is not None else 10
-        data = list_datasets_via_requests(limit=api_limit, full=True)
-        # The returned data is a list of dataset dicts
+        # Fetch all datasets by using a very large limit (10000)
+        # This should effectively return all available datasets in most cases
+        hf_datasets = list_datasets_via_requests(limit=10000, full=include_size)
+        
+        # Apply filtering
+        if search:
+            search_lower = search.lower()
+            filtered_datasets = [
+                d for d in hf_datasets 
+                if search_lower in d["id"].lower() or 
+                search_lower in (d.get("name") or "").lower() or
+                search_lower in (d.get("description") or "").lower()
+            ]
+        else:
+            filtered_datasets = hf_datasets
+        
+        # Get total count before applying limit/offset
+        total_count = len(filtered_datasets)
+        
+        # Apply pagination
+        if offset is not None and offset > 0:
+            filtered_datasets = filtered_datasets[offset:]
+            
+        if limit is not None:
+            filtered_datasets = filtered_datasets[:limit]
+        
+        # Prepare result datasets with additional information
         results = []
+        for dataset in filtered_datasets:
+            # Always include id, name, and description
+            result_dataset = {
+                "id": dataset["id"],
+                "name": dataset.get("name"),
+                "description": dataset.get("description"),
+                "tags": dataset.get("tags", []),
+                "author": dataset.get("author"),
+                "created_at": dataset.get("created_at"),
+                "updated_at": dataset.get("updated_at"),
+            }
+            
+            # Add size if requested
+            if include_size and "size" in dataset:
+                result_dataset["size_bytes"] = dataset["size"]
+            
+            results.append(result_dataset)
         
-        for info in data:
-            # Optionally add impact assessment
-            if include_impact:
-                # Process impact assessment separately to avoid async issues
-                stored_impact = None
+        # If we need to include impact assessment
+        if include_impact:
+            for dataset in results:
+                dataset_id = dataset["id"]
+                # Initialize empty impact assessment
+                dataset["impact_level"] = ImpactLevel.LOW
+                dataset["impact_assessment"] = {"source": "default"}
                 
-                # Filter by search if needed
-                if search is None or search.lower() in info.get("id", "").lower():
-                    # Calculate basic metrics
-                    dataset_size = get_dataset_size(info)
-                    downloads, likes = get_dataset_metrics(info)
-                    
-                    # If downloads still null, try to fetch directly
-                    if downloads is None and info.get("id"):
-                        direct_metrics = fetch_dataset_metrics(info["id"])
-                        if direct_metrics:
-                            downloads = direct_metrics.get("downloads")
-                            # Fallback to monthly downloads if all-time not available
-                            if downloads is None:
-                                downloads = direct_metrics.get("monthly_downloads")
-                            # Update likes if not available
-                            if likes is None:
-                                likes = direct_metrics.get("likes")
-                    
-                    impact_level, method = determine_impact_level_by_criteria(dataset_size, downloads, likes)
-                    info["impact_level"] = impact_level
-                    info["impact_assessment"] = {
-                        "level": impact_level,
-                        "method": method,
-                        "metrics": {
-                            "size_bytes": dataset_size,
-                            "downloads": downloads,
-                            "likes": likes
-                        },
-                        "source": "calculated"
-                    }
-                    
-                    results.append(info)
-            else:
-                # Simple filtering with no impact assessment
-                if search is None or search.lower() in info.get("id", "").lower():
-                    results.append(info)
-                
-        return results
-        
-    # Process stored impacts separately if needed
-    if include_impact and use_stored_impacts:
-        # First get basic dataset info without stored impacts
-        results = await anyio.to_thread.run_sync(_worker)
-        
-        # Then enhance with stored impacts where available
-        for dataset in results:
-            dataset_id = dataset.get("id")
-            if dataset_id:
                 try:
+                    # Try to get stored impact assessment
                     stored_impact = await get_stored_dataset_impact(dataset_id)
                     if stored_impact:
                         # Update with stored impact data
@@ -365,15 +368,25 @@ async def list_datasets_async(
                         dataset["impact_assessment"]["source"] = "database"
                         dataset["impact_assessment"]["method"] = stored_impact["assessment_method"]
                         dataset["impact_assessment"]["metrics"] = {
-                            "size_bytes": stored_impact["size_bytes"],
-                            "file_count": stored_impact["file_count"],
-                            "downloads": stored_impact["downloads"],
-                            "likes": stored_impact["likes"]
+                            "size_bytes": stored_impact.get("metrics", {}).get("size_bytes"),
+                            "file_count": stored_impact.get("metrics", {}).get("file_count"),
+                            "downloads": stored_impact.get("metrics", {}).get("downloads"),
+                            "likes": stored_impact.get("metrics", {}).get("likes")
                         }
                 except Exception as e:
                     log.warning(f"Failed to fetch stored impact for {dataset_id}: {e}")
         
-        return results
+        if count_total:
+            return {
+                "items": results,
+                "count": total_count
+            }
+        else:
+            return results
+            
+    if include_impact:
+        # For impact assessment, we might need async operations
+        return await _worker()
     else:
         # Just return basic dataset info
         return await anyio.to_thread.run_sync(_worker)
