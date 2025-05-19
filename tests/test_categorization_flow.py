@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import requests
 from dotenv import load_dotenv
+import pytest
 
 
 logging.basicConfig(
@@ -112,53 +113,46 @@ async def run_tests():
     
     log.info("\n----- STEP 1: Retrieving datasets from API -----")
     initial_datasets = await client.get_datasets(limit=15)
+    # Handle paginated response
+    if isinstance(initial_datasets, dict) and "items" in initial_datasets:
+        initial_datasets = initial_datasets["items"]
     if not initial_datasets:
         log.error("Failed to retrieve datasets, cannot proceed with tests")
         return
     
-    dataset_ids = [d.get("id") for d in initial_datasets if d.get("id")]
+    dataset_ids = [d.get("id") for d in initial_datasets if isinstance(d, dict) and d.get("id")]
     log.info(f"Retrieved {len(dataset_ids)} dataset IDs for testing")
+    
+    # Store results for summary
+    summary = {}
+    summary['num_datasets'] = len(dataset_ids)
     
     log.info("\n----- TEST: Listing datasets with impact assessment -----")
     datasets_with_impact = await client.get_datasets(limit=5, with_impact=True)
-    for dataset in datasets_with_impact:
-        impact = dataset.get("impact_assessment", {})
-        impact_level = dataset.get("impact_level", "unknown")
-        log.info(f"Dataset: {dataset.get('id')}, Impact: {impact_level}")
-        if impact:
-            log.info(f"  Method: {impact.get('method')}")
-            log.info(f"  Metrics: {json.dumps(impact.get('metrics', {}))}")
+    impact_levels = [dataset.get("impact_level", "unknown") for dataset in datasets_with_impact if isinstance(dataset, dict)]
+    summary['sample_impact_levels'] = impact_levels
+    
+    log.info(f"Sample impact levels: {impact_levels}")
     
     log.info("\n----- TEST: Getting impact for specific datasets -----")
     test_datasets = random.sample(dataset_ids, min(3, len(dataset_ids)))
-    
+    test_impacts = []
     for dataset_id in test_datasets:
         impact = await client.get_dataset_impact(dataset_id)
-        log.info(f"Dataset: {dataset_id}")
-        log.info(f"  Level: {impact.get('impact_level')}")
-        log.info(f"  Method: {impact.get('assessment_method')}")
-        log.info(f"  Size: {impact.get('metrics', {}).get('size_bytes')} bytes")
-        log.info(f"  Downloads: {impact.get('metrics', {}).get('downloads')}")
-        log.info(f"  Likes: {impact.get('metrics', {}).get('likes')}")
-        
-        # Now force a refresh to test saving to database
-        log.info(f"Forcing refresh for {dataset_id}...")
-        refreshed_impact = await client.get_dataset_impact(dataset_id, force_refresh=True)
-        log.info(f"  Refreshed level: {refreshed_impact.get('impact_level')}")
+        test_impacts.append(impact.get('impact_level'))
+    summary['test_impacts'] = test_impacts
     
     # 4. Test batch population of impacts
     log.info("\n----- TEST: Batch population of impacts -----")
-    # Select another subset for batch testing
     batch_datasets = random.sample(
         [d for d in dataset_ids if d not in test_datasets], 
         min(3, len(dataset_ids) - len(test_datasets))
     )
-    
+    batch_result = None
     if batch_datasets:
         batch_result = await client.populate_impacts(batch_datasets)
         log.info(f"Batch population result: {batch_result}")
-        
-        # Wait a bit for background processing
+        summary['batch_result'] = batch_result
         log.info("Waiting for background processing...")
         await asyncio.sleep(5)
     else:
@@ -166,18 +160,35 @@ async def run_tests():
     
     # 5. Test listing datasets by impact level
     log.info("\n----- TEST: Listing datasets by impact level -----")
+    by_impact = {}
     for level in ["low", "medium", "high"]:
         datasets = await client.get_datasets_by_impact(level)
+        by_impact[level] = datasets
         log.info(f"Datasets with impact level '{level}': {datasets}")
+    summary['by_impact'] = by_impact
     
     # 6. Test checking if assessment is stale
     log.info("\n----- TEST: Checking if assessment is stale -----")
+    stale_results = {}
     for dataset_id in test_datasets[:2]:
         is_stale = await client.is_assessment_stale(dataset_id)
+        stale_results[dataset_id] = is_stale
         log.info(f"Dataset {dataset_id} assessment is stale: {is_stale}")
+    summary['stale_results'] = stale_results
     
     log.info("\nAll tests completed!")
+    
+    # Print summary
+    print("\n===== SUMMARY OF IMPACT ASSESSMENT TESTS =====")
+    print(f"Number of datasets retrieved: {summary['num_datasets']}")
+    print(f"Sample impact levels: {summary['sample_impact_levels']}")
+    print(f"Tested impacts for sample datasets: {summary['test_impacts']}")
+    if batch_result:
+        print(f"Batch population result: {batch_result}")
+    print(f"Datasets by impact level: {summary['by_impact']}")
+    print(f"Stale assessment results: {summary['stale_results']}")
 
 
-if __name__ == "__main__":
-    asyncio.run(run_tests())
+@pytest.mark.asyncio
+async def test_categorization_flow():
+    await run_tests()

@@ -19,6 +19,7 @@ import json
 import os
 from datetime import datetime
 import statistics
+import pytest
 
 import httpx
 
@@ -239,7 +240,9 @@ async def run_tests(args):
     
     # Get datasets for remaining tests
     datasets = await client.get_datasets(limit=50)
-    dataset_ids = [d.get("id") for d in datasets if d.get("id")]
+    if isinstance(datasets, dict) and "items" in datasets:
+        datasets = datasets["items"]
+    dataset_ids = [d.get("id") for d in datasets if isinstance(d, dict) and d.get("id")]
     log.info(f"Retrieved {len(dataset_ids)} dataset IDs for testing")
     
     # Test case 3: Compare cached vs uncached single dataset impact
@@ -280,34 +283,21 @@ async def run_tests(args):
         log.info(f"Processing rate: {concurrent_result['datasets_per_second']:.2f} datasets/second")
     
     log.info("\nAll tests completed!")
-    
-    # Save results to file
-    results = {
-        "timestamp": datetime.now().isoformat(),
-        "config": vars(args),
-        "tests": {
-            "mock_endpoint": mock_result,
-            "mock_dataset_impact": impact_result,
-            "batch_processing": batch_result if 'batch_result' in locals() else None,
-            "concurrent_requests": concurrent_result if 'concurrent_result' in locals() else None
-        }
-    }
-    
-    with open(f"perf_results_{int(time.time())}.json", "w") as f:
-        json.dump(results, f, indent=2)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test dataset categorization performance")
-    parser.add_argument("--api-url", default=DEFAULT_API_URL, help="API base URL")
-    parser.add_argument("--requests", type=int, default=DEFAULT_REQUEST_COUNT, help="Number of requests per test")
-    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Concurrency level for tests")
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size for batch processing test")
-    parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING"], default="INFO", help="Logging level")
-    
-    args = parser.parse_args()
-    
-    # Configure logging level
-    log.setLevel(getattr(logging, args.log_level))
-    
-    # Run tests
-    asyncio.run(run_tests(args)) 
+    # Print results instead of saving to file
+    print("\n===== SUMMARY OF PERFORMANCE TESTS =====")
+    print("Mock endpoint:", mock_result)
+    print("Mock dataset impact:", impact_result)
+    if 'batch_result' in locals():
+        print("Batch processing:", batch_result)
+    if 'concurrent_result' in locals():
+        print("Concurrent requests:", concurrent_result)
+
+@pytest.mark.asyncio
+async def test_optimized_categorization():
+    class Args:
+        api_url = DEFAULT_API_URL
+        requests = DEFAULT_REQUEST_COUNT
+        concurrency = DEFAULT_CONCURRENCY
+        batch_size = DEFAULT_BATCH_SIZE
+    await run_tests(Args()) 

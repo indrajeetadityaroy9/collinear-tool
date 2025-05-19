@@ -55,7 +55,7 @@ class Dataset(DatasetBase):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     class Config:
-        orm_mode = True  # For ORM compatibility if using an ORM
+        pass  # Removed orm_mode = True since ORM is not used
 
 class DatasetCombineRequest(BaseModel):
     source_datasets: List[str] = Field(..., description="List of dataset IDs to combine")
