@@ -177,7 +177,7 @@ async def cache_warmup(dataset_ids: List[str] = None) -> Dict[str, Any]:
     if not dataset_ids:
         try:
             # Get top 50 most popular datasets
-            top_datasets = await list_datasets_async(limit=50, sort_by="downloads")
+            top_datasets = await list_datasets_async(limit=50, sort="downloads")
             dataset_ids = [d["id"] for d in top_datasets]
             logger.info(f"Using top {len(dataset_ids)} datasets for cache warmup")
         except Exception as e:

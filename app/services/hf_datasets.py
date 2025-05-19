@@ -73,10 +73,29 @@ def _dataset_info_to_dict(info: DatasetInfo) -> dict[str, Any]:
         "downloadsAllTime": getattr(info, "downloads_all_time", None),
     }
 
-def list_datasets_via_requests(limit=10, full=True):
+def list_datasets_via_requests(limit=10, offset=0, full=True, search=None, author=None, filter=None, sort=None, direction=None):
+    """
+    Fetch a page of datasets from HuggingFace using official API pagination parameters.
+    Args:
+        limit: Number of datasets to fetch (page size)
+        offset: Number of datasets to skip (page offset)
+        full: Whether to fetch full dataset info
+        search, author, filter, sort, direction: Optional HuggingFace API params
+    Returns:
+        List of dataset dicts for the requested page
+    """
     token = get_hf_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    params = {"limit": str(limit), "full": str(full)}
+    params = {
+        "limit": str(limit),
+        "offset": str(offset),
+        "full": str(full).lower()
+    }
+    if search: params["search"] = search
+    if author: params["author"] = author
+    if filter: params["filter"] = filter
+    if sort: params["sort"] = sort
+    if direction: params["direction"] = direction
     response = requests.get("https://huggingface.co/api/datasets", params=params, headers=headers, timeout=10)
     response.raise_for_status()
     return response.json()
@@ -286,55 +305,49 @@ async def list_datasets_async(
     include_impact: bool = False,
     use_stored_impacts: bool = True,
     count_total: bool = False,
+    author: str | None = None,
+    filter: str | None = None,
+    sort: str | None = None,
+    direction: str | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """
-    Asynchronously fetch datasets from the HuggingFace API with optional filtering and impact assessment.
-    
+    Asynchronously fetch a page of datasets from the HuggingFace API with optional filtering and impact assessment.
     Args:
-        limit: Maximum number of datasets to return
-        offset: Number of datasets to skip (for pagination)
+        limit: Maximum number of datasets to return (page size)
+        offset: Number of datasets to skip (page offset)
         search: Optional search string to filter datasets
         include_size: Whether to include size information
         include_impact: Whether to include impact assessment
         use_stored_impacts: Whether to use stored impact assessments from database
         count_total: Whether to return total count in a paginated response format
-        
+        author, filter, sort, direction: Optional HuggingFace API params
     Returns:
         If count_total is True, returns a dict with 'items' (list of datasets) and 'count' (total number of matching datasets)
         Otherwise, returns a list of dataset dictionaries
     """
     async def _worker() -> dict[str, Any] | list[dict[str, Any]]:
-        # Use direct requests.get for HuggingFace API
-        # Fetch all datasets by using a very large limit (10000)
-        # This should effectively return all available datasets in most cases
-        hf_datasets = list_datasets_via_requests(limit=10000, full=include_size)
-        
-        # Apply filtering
-        if search:
-            search_lower = search.lower()
-            filtered_datasets = [
-                d for d in hf_datasets 
-                if search_lower in d["id"].lower() or 
-                search_lower in (d.get("name") or "").lower() or
-                search_lower in (d.get("description") or "").lower()
-            ]
-        else:
-            filtered_datasets = hf_datasets
-        
-        # Get total count before applying limit/offset
-        total_count = len(filtered_datasets)
-        
-        # Apply pagination
-        if offset is not None and offset > 0:
-            filtered_datasets = filtered_datasets[offset:]
-            
-        if limit is not None:
-            filtered_datasets = filtered_datasets[:limit]
+        # Fetch only the requested page from HuggingFace
+        hf_datasets = list_datasets_via_requests(
+            limit=limit or 10,
+            offset=offset or 0,
+            full=include_size,
+            search=search,
+            author=author,
+            filter=filter,
+            sort=sort,
+            direction=direction
+        )
+
+        # HuggingFace returns a list; if you want total count, you may need to fetch it separately or infer from headers
+        filtered_datasets = hf_datasets
+        total_count = None
+        # Try to get total count from headers if available (not always provided)
+        # If not, fallback to len(filtered_datasets) for this page
+        # (Optionally, you could make a separate call with limit=1, offset=0 to get total count if needed)
         
         # Prepare result datasets with additional information
         results = []
         for dataset in filtered_datasets:
-            # Always include id, name, and description
             result_dataset = {
                 "id": dataset["id"],
                 "name": dataset.get("name"),
@@ -344,26 +357,18 @@ async def list_datasets_async(
                 "created_at": dataset.get("created_at"),
                 "updated_at": dataset.get("updated_at"),
             }
-            
-            # Add size if requested
             if include_size and "size" in dataset:
                 result_dataset["size_bytes"] = dataset["size"]
-            
             results.append(result_dataset)
-        
-        # If we need to include impact assessment
+
         if include_impact:
             for dataset in results:
                 dataset_id = dataset["id"]
-                # Initialize empty impact assessment
                 dataset["impact_level"] = ImpactLevel.LOW
                 dataset["impact_assessment"] = {"source": "default"}
-                
                 try:
-                    # Try to get stored impact assessment
                     stored_impact = await get_stored_dataset_impact(dataset_id)
                     if stored_impact:
-                        # Update with stored impact data
                         dataset["impact_level"] = ImpactLevel(stored_impact["impact_level"])
                         dataset["impact_assessment"]["source"] = "database"
                         dataset["impact_assessment"]["method"] = stored_impact["assessment_method"]
@@ -375,20 +380,19 @@ async def list_datasets_async(
                         }
                 except Exception as e:
                     log.warning(f"Failed to fetch stored impact for {dataset_id}: {e}")
-        
+
         if count_total:
+            # If you want to provide a total count, you may need to fetch it separately or document that only the current page count is available
             return {
                 "items": results,
-                "count": total_count
+                "count": len(results) if total_count is None else total_count
             }
         else:
             return results
-            
+
     if include_impact:
-        # For impact assessment, we might need async operations
         return await _worker()
     else:
-        # Just return basic dataset info
         return await anyio.to_thread.run_sync(_worker)
 
 async def get_dataset_impact_async(dataset_id: str) -> Dict[str, Any]:
