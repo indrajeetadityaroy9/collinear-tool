@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from typing import Final, Optional
 
 from pydantic import SecretStr, HttpUrl, Field
@@ -33,7 +32,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(60 * 24 * 7, env="ACCESS_TOKEN_EXPIRE_MINUTES")  # 1 week by default
 
     # Worker settings
-    WORKER_CONCURRENCY: int = 5
+    WORKER_CONCURRENCY: int = 10  # Increased from 5 for better parallel performance
 
     # Batch processing chunk size for Celery dataset tasks
     DATASET_BATCH_CHUNK_SIZE: int = 50

@@ -1,642 +1,264 @@
-import functools
 import logging
 import json
-from typing import Any, List, Optional, Sequence, Set, Dict, Tuple
-
-import anyio
+from typing import Any, List, Optional, Dict, Tuple
 import requests
-from huggingface_hub import (
-    DatasetInfo,
-    HfApi,
-    hf_hub_url,
-    list_repo_commits,
-)
-from huggingface_hub.utils import RepositoryNotFoundError, RevisionNotFoundError
-from huggingface_hub.errors import HfHubHTTPError
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from fastapi import HTTPException
+from huggingface_hub import HfApi
 from app.core.config import settings
-from app.schemas.dataset_common import ImpactLevel, DatasetMetrics
-from app.services.redis_client import cache_get, cache_set, generate_cache_key
-from app.services.dataset_impacts import get_stored_dataset_impact
+from app.schemas.dataset_common import ImpactLevel
+from app.services.redis_client import sync_cache_set, sync_cache_get, generate_cache_key, get_redis_sync
+import time
+import asyncio
+import redis
+import gzip
+from datetime import datetime, timezone
+import os
 
 log = logging.getLogger(__name__)
 api = HfApi()
+redis_client = redis.Redis(host="redis", port=6379, decode_responses=True)
 
-# Define size thresholds for impact categorization (in bytes)
-# These thresholds are based on dataset size:
-# - Low impact: < 100 MB
-# - Medium impact: 100 MB - 1 GB
-# - High impact: > 1 GB
+# Thresholds for impact categorization
 SIZE_THRESHOLD_LOW = 100 * 1024 * 1024  # 100 MB
 SIZE_THRESHOLD_MEDIUM = 1024 * 1024 * 1024  # 1 GB
+DOWNLOADS_THRESHOLD_LOW = 1000
+DOWNLOADS_THRESHOLD_MEDIUM = 10000
+LIKES_THRESHOLD_LOW = 10
+LIKES_THRESHOLD_MEDIUM = 100
 
-# Define popularity thresholds
-DOWNLOADS_THRESHOLD_LOW = 1000  # Low: < 1000 downloads
-DOWNLOADS_THRESHOLD_MEDIUM = 10000  # Medium: 1000-10000 downloads, High: > 10000
-
-LIKES_THRESHOLD_LOW = 10  # Low: < 10 likes
-LIKES_THRESHOLD_MEDIUM = 100  # Medium: 10-100 likes, High: > 100
-
-# Dataset viewer API endpoint
-DATASET_INFO_ENDPOINT = "https://datasets-server.huggingface.co/info?dataset={dataset_id}"
-# Direct dataset endpoint to get metrics
-DATASET_METRICS_ENDPOINT = "https://huggingface.co/api/datasets/{dataset_id}"
-
-# Constants for dataset API access and caching
 HF_API_URL = "https://huggingface.co/api/datasets"
-DATASET_CACHE_TTL = 60 * 60  # Cache datasets list for 1 hour
+DATASET_CACHE_TTL = 60 * 60  # 1 hour
+
+# Redis and HuggingFace API setup
+REDIS_KEY = "hf:datasets:all"
+REDIS_META_KEY = "hf:datasets:meta"
+REDIS_TTL = 60 * 60  # 1 hour
+
+# Impact thresholds (in bytes)
+SIZE_LOW = 100 * 1024 * 1024
+SIZE_MEDIUM = 1024 * 1024 * 1024
 
 def get_hf_token():
-    token = settings.HF_API_TOKEN.get_secret_value() if hasattr(settings, 'HF_API_TOKEN') and settings.HF_API_TOKEN else None
-    log.info(f"Using HuggingFace token: {token[:6]}..." if token else "No HuggingFace token set!")
+    token = os.environ.get("HUGGINGFACEHUB_API_TOKEN")
+    if not token:
+        raise RuntimeError("HUGGINGFACEHUB_API_TOKEN environment variable is not set. Please set it securely.")
     return token
 
-# Fail fast on 429, no retries
-retry_hf = retry(
-    stop=stop_after_attempt(1),
-    retry=retry_if_exception_type(HfHubHTTPError),
-    reraise=True
-)
-
-def _dataset_info_to_dict(info: DatasetInfo) -> dict[str, Any]:
-    """Keep only JSON-serialisable bits we care about."""
-    return {
-        "id": info.id,
-        "cardData": info.cardData,          
-        "lastModified": info.lastModified, 
-        "likes": info.likes,
-        "gated": info.gated,
-        "sha": info.sha,
-        # Other key metrics
-        "downloads": getattr(info, "downloads", None),
-        "downloadsAllTime": getattr(info, "downloads_all_time", None),
-    }
-
-def list_datasets_via_requests(limit=10, offset=0, full=True, search=None, author=None, filter=None, sort=None, direction=None):
-    """
-    Fetch a page of datasets from HuggingFace using official API pagination parameters.
-    Args:
-        limit: Number of datasets to fetch (page size)
-        offset: Number of datasets to skip (page offset)
-        full: Whether to fetch full dataset info
-        search, author, filter, sort, direction: Optional HuggingFace API params
-    Returns:
-        List of dataset dicts for the requested page
-    """
-    token = get_hf_token()
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    params = {
-        "limit": str(limit),
-        "offset": str(offset),
-        "full": str(full).lower()
-    }
-    if search: params["search"] = search
-    if author: params["author"] = author
-    if filter: params["filter"] = filter
-    if sort: params["sort"] = sort
-    if direction: params["direction"] = direction
-    response = requests.get("https://huggingface.co/api/datasets", params=params, headers=headers, timeout=10)
-    response.raise_for_status()
-    return response.json()
-
-def fetch_dataset_viewer_info(dataset_id: str) -> Dict[str, Any]:
-    """
-    Fetch detailed dataset information from the HF dataset-viewer API.
-    
-    Returns:
-        Dictionary containing dataset info including size, splits, etc.
-    """
-    url = DATASET_INFO_ENDPOINT.format(dataset_id=dataset_id)
-    token = get_hf_token()
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    
+def get_dataset_commits(dataset_id: str, limit: int = 20):
+    from huggingface_hub import HfApi
+    import logging
+    log = logging.getLogger(__name__)
+    api = HfApi()
+    log.info(f"[get_dataset_commits] Fetching commits for dataset_id={dataset_id}")
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("dataset_info", {})
-    except Exception as exc:
-        log.debug(f"Dataset-Viewer API failed for {dataset_id} → {exc}")
-        return {}
-
-def fetch_dataset_metrics(dataset_id: str) -> Dict[str, Any]:
-    """
-    Fetch dataset metrics directly from the HuggingFace API.
-    
-    Returns:
-        Dictionary containing metrics including downloads, likes, etc.
-    """
-    url = DATASET_METRICS_ENDPOINT.format(dataset_id=dataset_id)
-    token = get_hf_token()
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    
-    try:
-        log.info(f"Fetching metrics for {dataset_id} from {url}")
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        log.info(f"Received metrics for {dataset_id}: downloads={data.get('downloads', None)}, likes={data.get('likes', None)}")
-        return data
-    except Exception as exc:
-        log.warning(f"Failed to fetch metrics for {dataset_id}: {exc}")
-        return {}
-
-def determine_impact_level_by_criteria(size: int | None, downloads: int | None, likes: int | None) -> Tuple[ImpactLevel, str]:
-    """
-    Determine the impact level based on multiple criteria.
-    
-    Args:
-        size: Size of the dataset in bytes
-        downloads: Number of downloads (all time)
-        likes: Number of likes
-        
-    Returns:
-        Tuple of (impact_level, assessment_method)
-    """
-    # Default scores if metrics are missing
-    size_score = 1  # Medium by default
-    popularity_score = 1  # Medium by default
-    
-    # Calculate size impact (0 = low, 1 = medium, 2 = high)
-    if size is not None:
-        if size < SIZE_THRESHOLD_LOW:
-            size_score = 0
-        elif size < SIZE_THRESHOLD_MEDIUM:
-            size_score = 1
-        else:
-            size_score = 2
-    
-    # Calculate popularity impact using downloads and likes
-    download_score = 1
-    if downloads is not None:
-        if downloads < DOWNLOADS_THRESHOLD_LOW:
-            download_score = 0
-        elif downloads < DOWNLOADS_THRESHOLD_MEDIUM:
-            download_score = 1
-        else:
-            download_score = 2
-    
-    like_score = 1
-    if likes is not None:
-        if likes < LIKES_THRESHOLD_LOW:
-            like_score = 0
-        elif likes < LIKES_THRESHOLD_MEDIUM:
-            like_score = 1
-        else:
-            like_score = 2
-    
-    # Combine popularity metrics (max of downloads and likes)
-    popularity_score = max(download_score, like_score)
-    
-    # Calculate overall impact (average of size and popularity, rounded up)
-    overall_score = (size_score + popularity_score) / 2
-    
-    # Determine assessment method based on which metrics were available
-    methods = []
-    if size is not None:
-        methods.append("size")
-    if downloads is not None:
-        methods.append("downloads")
-    if likes is not None:
-        methods.append("likes")
-    
-    assessment_method = "_and_".join(methods) + "_based" if methods else "unknown"
-    
-    # Map score to impact level
-    if overall_score < 0.75:  # Low threshold
-        return ImpactLevel.LOW, assessment_method
-    elif overall_score < 1.75:  # Medium threshold
-        return ImpactLevel.MEDIUM, assessment_method
-    else:
-        return ImpactLevel.HIGH, assessment_method
-
-def determine_impact_level(dataset_size: int | None, 
-                          downloads: int | None = None, 
-                          likes: int | None = None) -> ImpactLevel:
-    """
-    Determine the impact level of a dataset based on size and popularity metrics.
-    
-    Args:
-        dataset_size: Size of the dataset in bytes, or None if size is unknown
-        downloads: Number of downloads (all time), or None if unknown
-        likes: Number of likes, or None if unknown
-        
-    Returns:
-        Impact level: ImpactLevel.LOW, ImpactLevel.MEDIUM, or ImpactLevel.HIGH
-    """
-    impact_level, _ = determine_impact_level_by_criteria(dataset_size, downloads, likes)
-    return impact_level
-
-def get_dataset_size(dataset_info: dict) -> int | None:
-    """
-    Extract the dataset size from dataset info.
-    Returns None if size information is not available.
-    """
-    # Try to get size from different possible locations in the dataset info
-    if "size" in dataset_info:
-        return dataset_info["size"]
-    
-    # Some datasets might store size in bytes in cardData
-    if "cardData" in dataset_info and isinstance(dataset_info["cardData"], dict):
-        card_data = dataset_info["cardData"]
-        if "size_bytes" in card_data:
-            return card_data["size_bytes"]
-        if "size" in card_data:
-            return card_data["size"]
-    
-    # Try dataset_viewer API info format
-    if "dataset_size" in dataset_info:
-        return dataset_info["dataset_size"]
-    
-    return None
-
-def get_dataset_metrics(dataset_info: dict) -> Tuple[int | None, int | None]:
-    """
-    Extract downloads and likes metrics from dataset info.
-    Returns (downloads, likes) tuple, with None for unavailable metrics.
-    """
-    downloads = None
-    likes = None
-    
-    # Log the structure of dataset_info to help debugging
-    try:
-        log.debug(f"Dataset info keys: {list(dataset_info.keys())}")
-        if "cardData" in dataset_info:
-            log.debug(f"CardData keys: {list(dataset_info['cardData'].keys())}")
-    except Exception:
-        pass
-    
-    # Check for total downloads
-    if "downloads" in dataset_info:
-        downloads = dataset_info["downloads"]
-    
-    # Check for 'downloads_all_time' which is sometimes used instead
-    if downloads is None and "downloads_all_time" in dataset_info:
-        downloads = dataset_info["downloads_all_time"]
-    
-    # Check for alternate keys
-    if downloads is None and "downloadsAllTime" in dataset_info:
-        downloads = dataset_info["downloadsAllTime"]
-    
-    if "likes" in dataset_info:
-        likes = dataset_info["likes"]
-    
-    # Check cardData as fallback
-    if "cardData" in dataset_info and isinstance(dataset_info["cardData"], dict):
-        card_data = dataset_info["cardData"]
-        if downloads is None:
-            # Try different possible keys for downloads
-            for key in ["downloads", "downloads_all_time", "downloadsAllTime", "totalDownloads"]:
-                if key in card_data:
-                    downloads = card_data[key]
-                    break
-                    
-        if likes is None and "likes" in card_data:
-            likes = card_data["likes"]
-    
-    return downloads, likes
-
-async def list_datasets_async(
-    limit: int | None = None,
-    offset: int | None = 0,
-    search: str | None = None,
-    include_size: bool = False,
-    include_impact: bool = False,
-    use_stored_impacts: bool = True,
-    count_total: bool = False,
-    author: str | None = None,
-    filter: str | None = None,
-    sort: str | None = None,
-    direction: str | None = None,
-) -> dict[str, Any] | list[dict[str, Any]]:
-    """
-    Asynchronously fetch a page of datasets from the HuggingFace API with optional filtering and impact assessment.
-    Args:
-        limit: Maximum number of datasets to return (page size)
-        offset: Number of datasets to skip (page offset)
-        search: Optional search string to filter datasets
-        include_size: Whether to include size information
-        include_impact: Whether to include impact assessment
-        use_stored_impacts: Whether to use stored impact assessments from database
-        count_total: Whether to return total count in a paginated response format
-        author, filter, sort, direction: Optional HuggingFace API params
-    Returns:
-        If count_total is True, returns a dict with 'items' (list of datasets) and 'count' (total number of matching datasets)
-        Otherwise, returns a list of dataset dictionaries
-    """
-    async def _worker() -> dict[str, Any] | list[dict[str, Any]]:
-        # Fetch only the requested page from HuggingFace
-        hf_datasets = list_datasets_via_requests(
-            limit=limit or 10,
-            offset=offset or 0,
-            full=include_size,
-            search=search,
-            author=author,
-            filter=filter,
-            sort=sort,
-            direction=direction
-        )
-
-        # HuggingFace returns a list; if you want total count, you may need to fetch it separately or infer from headers
-        filtered_datasets = hf_datasets
-        total_count = None
-        # Try to get total count from headers if available (not always provided)
-        # If not, fallback to len(filtered_datasets) for this page
-        # (Optionally, you could make a separate call with limit=1, offset=0 to get total count if needed)
-        
-        # Prepare result datasets with additional information
-        results = []
-        for dataset in filtered_datasets:
-            result_dataset = {
-                "id": dataset["id"],
-                "name": dataset.get("name"),
-                "description": dataset.get("description"),
-                "tags": dataset.get("tags", []),
-                "author": dataset.get("author"),
-                "created_at": dataset.get("created_at"),
-                "updated_at": dataset.get("updated_at"),
-            }
-            if include_size and "size" in dataset:
-                result_dataset["size_bytes"] = dataset["size"]
-            results.append(result_dataset)
-
-        if include_impact:
-            for dataset in results:
-                dataset_id = dataset["id"]
-                dataset["impact_level"] = ImpactLevel.LOW
-                dataset["impact_assessment"] = {"source": "default"}
-                try:
-                    stored_impact = await get_stored_dataset_impact(dataset_id)
-                    if stored_impact:
-                        dataset["impact_level"] = ImpactLevel(stored_impact["impact_level"])
-                        dataset["impact_assessment"]["source"] = "database"
-                        dataset["impact_assessment"]["method"] = stored_impact["assessment_method"]
-                        dataset["impact_assessment"]["metrics"] = {
-                            "size_bytes": stored_impact.get("metrics", {}).get("size_bytes"),
-                            "file_count": stored_impact.get("metrics", {}).get("file_count"),
-                            "downloads": stored_impact.get("metrics", {}).get("downloads"),
-                            "likes": stored_impact.get("metrics", {}).get("likes")
-                        }
-                except Exception as e:
-                    log.warning(f"Failed to fetch stored impact for {dataset_id}: {e}")
-
-        if count_total:
-            # If you want to provide a total count, you may need to fetch it separately or document that only the current page count is available
-            return {
-                "items": results,
-                "count": len(results) if total_count is None else total_count
-            }
-        else:
-            return results
-
-    if include_impact:
-        return await _worker()
-    else:
-        return await anyio.to_thread.run_sync(_worker)
-
-async def get_dataset_impact_async(dataset_id: str) -> Dict[str, Any]:
-    """
-    Get comprehensive impact assessment for a dataset.
-    
-    This function fetches dataset information from multiple sources and
-    computes an impact assessment based on size, downloads, and likes.
-    
-    Returns:
-        Dictionary with impact assessment details
-    """
-    # First try to get info from dataset-viewer API
-    viewer_info = await anyio.to_thread.run_sync(fetch_dataset_viewer_info, dataset_id)
-    
-    # Get size information
-    dataset_size = get_dataset_size(viewer_info)
-    
-    # Get files for fallback size estimation
-    files = await list_repo_files_async(dataset_id)
-    file_count = len(files)
-    
-    # Try to get download and likes metrics from multiple sources
-    downloads = None
-    likes = None
-    
-    # First try direct metrics API
-    try:
-        metrics_data = await anyio.to_thread.run_sync(
-            lambda: fetch_dataset_metrics(dataset_id)
-        )
-        if metrics_data:
-            downloads = metrics_data.get("downloads")
-            # If all-time downloads not available, try monthly
-            if downloads is None:
-                downloads = metrics_data.get("monthly_downloads")
-            likes = metrics_data.get("likes")
-            log.info(f"Retrieved metrics for {dataset_id}: downloads={downloads}, likes={likes}")
+        commits = api.list_repo_commits(repo_id=dataset_id, repo_type="dataset")
+        log.info(f"[get_dataset_commits] Received {len(commits)} commits for {dataset_id}")
     except Exception as e:
-        log.warning(f"Failed to fetch metrics: {e}")
-    
-    # Try through HF API if still no metrics
-    if downloads is None or likes is None:
+        log.error(f"[get_dataset_commits] Error fetching commits for {dataset_id}: {e}", exc_info=True)
+        raise  # Let the API layer catch and handle this
+    result = []
+    for c in commits[:limit]:
         try:
-            hf_info = api.dataset_info(dataset_id, token=get_hf_token())
-            hf_info_dict = _dataset_info_to_dict(hf_info) if hf_info else {}
-            
-            d, l = get_dataset_metrics(hf_info_dict)
-            if downloads is None:
-                downloads = d
-            if likes is None:
-                likes = l
+            commit_id = getattr(c, "commit_id", "")
+            title = getattr(c, "title", "")
+            message = getattr(c, "message", title)
+            authors = getattr(c, "authors", [])
+            author_name = authors[0] if authors and isinstance(authors, list) else ""
+            created_at = getattr(c, "created_at", None)
+            if created_at:
+                if hasattr(created_at, "isoformat"):
+                    date = created_at.isoformat()
+                else:
+                    date = str(created_at)
+            else:
+                date = ""
+            result.append({
+                "id": commit_id or "",
+                "title": title or message or "",
+                "message": message or title or "",
+                "author": {"name": author_name, "email": ""},
+                "date": date,
+            })
         except Exception as e:
-            log.warning(f"Failed to fetch HF API dataset info: {e}")
-    
-    # If we couldn't get any size info, estimate based on file count
-    if dataset_size is None and file_count > 0:
-        # Very rough estimation - just for fallback
-        avg_file_size = 5 * 1024 * 1024  # Assume 5MB average per file
-        dataset_size = avg_file_size * file_count
-    
-    # Determine impact level
-    impact_level, method = determine_impact_level_by_criteria(dataset_size, downloads, likes)
-    
-    # Log the metrics we're using
-    log.info(f"Impact assessment for {dataset_id}: size={dataset_size}, downloads={downloads}, likes={likes}, level={impact_level}")
-    
-    # Construct thresholds info
-    thresholds = {
-        "size": {
-            "low": f"< {SIZE_THRESHOLD_LOW / (1024 * 1024):.0f} MB",
-            "medium": f"{SIZE_THRESHOLD_LOW / (1024 * 1024):.0f} MB - {SIZE_THRESHOLD_MEDIUM / (1024 * 1024 * 1024):.0f} GB",
-            "high": f"> {SIZE_THRESHOLD_MEDIUM / (1024 * 1024 * 1024):.0f} GB"
-        },
-        "downloads": {
-            "low": f"< {DOWNLOADS_THRESHOLD_LOW}",
-            "medium": f"{DOWNLOADS_THRESHOLD_LOW} - {DOWNLOADS_THRESHOLD_MEDIUM}",
-            "high": f"> {DOWNLOADS_THRESHOLD_MEDIUM}"
-        },
-        "likes": {
-            "low": f"< {LIKES_THRESHOLD_LOW}",
-            "medium": f"{LIKES_THRESHOLD_LOW} - {LIKES_THRESHOLD_MEDIUM}",
-            "high": f"> {LIKES_THRESHOLD_MEDIUM}"
-        },
-        "file_count": {
-            "low": "1-5 files",
-            "medium": "6-20 files",
-            "high": "20+ files"
+            log.error(f"[get_dataset_commits] Error parsing commit: {e} | Commit: {getattr(c, '__dict__', str(c))}", exc_info=True)
+    log.info(f"[get_dataset_commits] Returning {len(result)} parsed commits for {dataset_id}")
+    return result
+
+def get_dataset_files(dataset_id: str) -> List[str]:
+    return api.list_repo_files(dataset_id, repo_type="dataset")
+
+def get_file_url(dataset_id: str, filename: str, revision: Optional[str] = None) -> str:
+    from huggingface_hub import hf_hub_url
+    return hf_hub_url(repo_id=dataset_id, filename=filename, repo_type="dataset", revision=revision)
+
+def get_datasets_page_from_zset(offset: int = 0, limit: int = 10, search: str = None) -> dict:
+    import redis
+    import json
+    redis_client = redis.Redis(host="redis", port=6379, db=0, decode_responses=True)
+    zset_key = "hf:datasets:all:zset"
+    hash_key = "hf:datasets:all:hash"
+    # Get total count
+    total = redis_client.zcard(zset_key)
+    # Get dataset IDs for the page
+    ids = redis_client.zrange(zset_key, offset, offset + limit - 1)
+    # Fetch metadata for those IDs
+    if not ids:
+        return {"items": [], "count": total}
+    items = redis_client.hmget(hash_key, ids)
+    # Parse JSON and filter/search if needed
+    parsed = []
+    for raw in items:
+        if not raw:
+            continue
+        try:
+            item = json.loads(raw)
+            parsed.append(item)
+        except Exception:
+            continue
+    if search:
+        parsed = [d for d in parsed if search.lower() in (d.get("id") or "").lower()]
+    return {"items": parsed, "count": total}
+
+def refresh_datasets_cache():
+    """Fetch all datasets (200,000+) from HuggingFace and stream batches to Redis as a stream (XADD)."""
+    import redis
+    log.info("[refresh_datasets_cache] Fetching ALL datasets from HuggingFace via local proxy (streaming to Redis Stream).")
+    try:
+        token = os.environ.get("HUGGINGFACEHUB_API_TOKEN")
+        if not token:
+            raise RuntimeError("HUGGINGFACEHUB_API_TOKEN environment variable is not set. Please set it securely.")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "Mozilla/5.0 (compatible; CollinearTool/1.0; +https://yourdomain.com)"
         }
-    }
-    
-    return {
-        "dataset_id": dataset_id,
-        "impact_level": impact_level,
-        "assessment_method": method,
-        "metrics": {
-            "size_bytes": dataset_size,
-            "downloads": downloads,
-            "likes": likes,
-            "file_count": file_count
-        },
-        "thresholds": thresholds
-    }
+        proxy_url = "http://host.docker.internal:8080/api/datasets"
+        page_size = 500
+        offset = 0
+        redis_client = redis.Redis(host="redis", port=6379, db=0, decode_responses=True)
+        stream_key = "hf:datasets:all:stream"
+        # Delete previous stream
+        redis_client.delete(stream_key)
+        total = 0
+        while True:
+            params = {"limit": page_size, "offset": offset, "full": "True"}
+            for attempt in range(5):
+                try:
+                    response = requests.get(proxy_url, headers=headers, params=params, timeout=120)
+                    response.raise_for_status()
+                    break
+                except requests.exceptions.RequestException as e:
+                    log.warning(f"[refresh_datasets_cache] Request failed (attempt {attempt+1}): {e}")
+                    if attempt == 4:
+                        raise
+                    time.sleep(2 ** attempt)
+            page = response.json()
+            if not page:
+                break
+            for ds in page:
+                dataset_id = ds.get("id")
+                card_data = ds.get("cardData") or {}
+                # Fetch accurate size_bytes from Datasets Server API
+                size_bytes = None
+                try:
+                    size_url = f"https://datasets-server.huggingface.co/size?dataset={dataset_id}"
+                    # Do NOT use Authorization header for this API
+                    size_resp = requests.get(size_url, timeout=30)
+                    log.info(f"[refresh_datasets_cache] Size API {dataset_id} status: {size_resp.status_code}")
+                    if size_resp.ok:
+                        size_data = size_resp.json()
+                        log.info(f"[refresh_datasets_cache] Size API {dataset_id} response: {size_data}")
+                        size_bytes = size_data.get("size", {}).get("dataset", {}).get("num_bytes_original_files")
+                    else:
+                        log.warning(f"[refresh_datasets_cache] Size API {dataset_id} failed: {size_resp.text}")
+                except Exception as e:
+                    log.warning(f"[refresh_datasets_cache] Could not fetch size for {dataset_id}: {e}")
+                time.sleep(0.1)  # avoid rate limiting
+                downloads = ds.get("downloads")
+                likes = ds.get("likes")
+                # Always compute impact_level from criteria
+                impact_level, _ = determine_impact_level_by_criteria(size_bytes, downloads, likes)
+                item = {
+                    "id": dataset_id,
+                    "name": ds.get("name"),
+                    "description": ds.get("description"),
+                    "size_bytes": size_bytes,
+                    "impact_level": impact_level,
+                    "downloads": downloads,
+                    "likes": likes,
+                    "tags": json.dumps(ds.get("tags", [])),
+                    "impact_assessment": json.dumps(ds.get("impact_assessment", {}))
+                }
+                # Ensure all values are str, int, float, or bytes, and convert None to 'null'
+                for k, v in item.items():
+                    if v is None:
+                        item[k] = 'null'
+                    elif not isinstance(v, (str, int, float, bytes)):
+                        item[k] = json.dumps(v)
+                redis_client.xadd(stream_key, item)
+                # Hybrid: also upsert into Sorted Set and Hash
+                zset_key = "hf:datasets:all:zset"
+                hash_key = "hf:datasets:all:hash"
+                redis_client.zadd(zset_key, {dataset_id: offset + total})
+                redis_client.hset(hash_key, dataset_id, json.dumps(item))
+                total += 1
+            log.info(f"[refresh_datasets_cache] Streamed {len(page)} datasets (offset {offset}), total so far: {total}")
+            if len(page) < page_size:
+                break
+            offset += page_size
+        log.info(f"[refresh_datasets_cache] Total datasets streamed to Redis Stream: {total}")
+        # Store meta info
+        meta_key = "hf:datasets:meta"
+        meta = {"last_update": datetime.now(timezone.utc).isoformat(), "total_items": total}
+        redis_client.set(meta_key, json.dumps(meta))
+        log.info(json.dumps({"event": "refresh_datasets_cache", "total_items": total, "timestamp": meta["last_update"]}))
+    except Exception as e:
+        log.error(f"[refresh_datasets_cache] Exception: {e}", exc_info=True)
 
-def _commit_history(dataset_id: str) -> List[dict]:
-    commits = list_repo_commits_with_retry(dataset_id)
-    return [c.__dict__ for c in commits]
-
-
-async def commit_history_async(dataset_id: str) -> List[dict]:
-    return await anyio.to_thread.run_sync(_commit_history, dataset_id)
-
-
-_DATASET_SUFFIXES: Set[str] = {
-    ".csv",
-    ".csv.gz",
-    ".json",
-    ".json.gz",
-    ".jsonl",
-    ".jsonl.gz",
-    ".parquet",
-    ".arrow",
-}
-
-_PARQUET_ENDPOINT = (
-    "https://datasets-server.huggingface.co/parquet?dataset={dataset_id}"
-)
-
-
-def _filter_dataset_files(paths: Sequence[str]) -> list[str]:
-    allowed = tuple(_DATASET_SUFFIXES)
-    return sorted(p for p in paths if p.lower().endswith(allowed))
-
-
-def _fetch_parquet_paths_via_viewer(dataset_id: str) -> list[str]:
-    url = _PARQUET_ENDPOINT.format(dataset_id=dataset_id)
+def determine_impact_level_by_criteria(size_bytes, downloads=None, likes=None):
+    """
+    Determine the impact level of a dataset based only on size_bytes, using data-driven thresholds:
+    - high: >= 10GB
+    - medium: >= 1GB
+    - low: >= 100MB
+    - not_available: < 100MB or null
+    Returns (impact_level, method).
+    """
     try:
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-    except Exception as exc:
-        log.debug("Dataset-Viewer API failed for %s → %s", dataset_id, exc)
-        return []
+        size = int(size_bytes) if size_bytes not in (None, 'null') else 0
+    except Exception:
+        size = 0
 
-    data = r.json()
-    parquet_files = data.get("parquet_files", [])
-    paths = {pf.get("relative_path") or pf.get("file_path") for pf in parquet_files}
-    return sorted(p for p in paths if p)
+    if size >= 10 * 1024 * 1024 * 1024:  # 10 GB
+        return ("high", "large_size")
+    elif size >= 1 * 1024 * 1024 * 1024:  # 1 GB
+        return ("medium", "medium_size")
+    elif size >= 100 * 1024 * 1024:       # 100 MB
+        return ("low", "small_size")
+    else:
+        return ("not_available", "size_unknown")
 
-
-def _list_repo_files(dataset_id: str) -> list[str]:
-    try:
-        paths = list_repo_files_with_retry(dataset_id)
-    except RepositoryNotFoundError as exc:
-        raise ValueError(f"Dataset '{dataset_id}' not found") from exc
-
-    filtered = _filter_dataset_files(paths)
-
-    if not filtered:
-        filtered = _fetch_parquet_paths_via_viewer(dataset_id)
-
-    return filtered
-
-
-@retry_hf
-def list_repo_files_with_retry(dataset_id):
-    token = get_hf_token()
-    try:
-        return api.list_repo_files(dataset_id, token=token, repo_type="dataset")
-    except HfHubHTTPError as e:
-        if e.response is not None and e.response.status_code == 429:
-            log.error(f"Rate limited by HuggingFace Hub. Token used: {token[:6]}...")
-            raise HTTPException(
-                status_code=503,
-                detail="HuggingFace API rate limit reached. Please try again later."
-            )
-        log.error(f"HuggingFace Hub error: {e}")
-        raise
-
-async def list_repo_files_async(dataset_id):
-    try:
-        return await anyio.to_thread.run_sync(list_repo_files_with_retry, dataset_id)
-    except HfHubHTTPError as e:
-        log.error(f"Failed to fetch files for {dataset_id}: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail="HuggingFace API unavailable or rate limited. Please try again later."
-        )
-
-def _get_file_download_url(
-    dataset_id: str,
-    filename: str,
-    revision: str | None,
-) -> str:
-    try:
-        return hf_hub_url(
-            repo_id=dataset_id,
-            filename=filename,
-            repo_type="dataset",
-            revision=revision,
-        )
-    except (RepositoryNotFoundError, RevisionNotFoundError) as exc:
-        raise ValueError(str(exc)) from exc
-
-
-async def get_file_download_url_async(
-    dataset_id: str,
-    filename: str,
-    *,
-    revision: Optional[str] = None,
-) -> str:
-    fn = functools.partial(_get_file_download_url, dataset_id, filename, revision)
-    return await anyio.to_thread.run_sync(fn)
-
-@retry_hf
-def list_repo_commits_with_retry(dataset_id, revision="main"):
-    token = get_hf_token()
-    try:
-        return api.list_repo_commits(dataset_id, revision=revision, token=token, repo_type="dataset")
-    except HfHubHTTPError as e:
-        if e.response is not None and e.response.status_code == 429:
-            log.error(f"Rate limited by HuggingFace Hub. Token used: {token[:6]}...")
-            raise HTTPException(
-                status_code=503,
-                detail="HuggingFace API rate limit reached. Please try again later."
-            )
-        log.error(f"HuggingFace Hub error: {e}")
-        raise
-
-async def list_repo_commits_async(dataset_id, revision="main"):
-    try:
-        return await anyio.to_thread.run_sync(list_repo_commits_with_retry, dataset_id, revision)
-    except HfHubHTTPError as e:
-        log.error(f"Failed to fetch commits for {dataset_id}: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail="HuggingFace API unavailable or rate limited. Please try again later."
-        )
-
-__all__ = [
-    "list_datasets_async",
-    "commit_history_async",
-    "list_repo_files_async",
-    "get_file_download_url_async",
-    "determine_impact_level",
-    "get_dataset_impact_async"
-]
-
+def get_dataset_size(dataset: dict, dataset_id: str = None):
+    """
+    Extract the size in bytes from a dataset dictionary.
+    Tries multiple locations based on possible HuggingFace API responses.
+    """
+    # Try top-level key
+    size_bytes = dataset.get("size_bytes")
+    if size_bytes not in (None, 'null'):
+        return size_bytes
+    # Try nested structure from the size API
+    size_bytes = (
+        dataset.get("size", {})
+        .get("dataset", {})
+        .get("num_bytes_original_files")
+    )
+    if size_bytes not in (None, 'null'):
+        return size_bytes
+    # Try metrics or info sub-dictionaries if present
+    for key in ["metrics", "info"]:
+        sub = dataset.get(key, {})
+        if isinstance(sub, dict):
+            size_bytes = sub.get("size_bytes")
+            if size_bytes not in (None, 'null'):
+                return size_bytes
+    # Not found
+    return None

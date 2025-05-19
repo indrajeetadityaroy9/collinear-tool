@@ -1,8 +1,25 @@
-from fastapi import FastAPI, Request
+import logging
+import json
+from fastapi import FastAPI
 from app.api import api_router
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from app.core.exceptions import SupabaseClientError
+from fastapi.middleware.gzip import GZipMiddleware
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_record = {
+            "level": record.levelname,
+            "time": self.formatTime(record, self.datefmt),
+            "name": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            log_record["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(log_record)
+
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
+logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 app = FastAPI(title="Collinear API")
 
@@ -16,15 +33,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 app.include_router(api_router, prefix="/api")
 
 @app.get("/")
 async def root():
     return {"message": "Welcome to the Collinear Data Tool API"}
-
-@app.exception_handler(SupabaseClientError)
-async def supabase_error_handler(request: Request, exc: SupabaseClientError):
-    return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 if __name__ == "__main__":
     import uvicorn

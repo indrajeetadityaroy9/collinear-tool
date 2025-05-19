@@ -57,6 +57,10 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.maintenance.health_check",
         "schedule": 300.0,  # Run every 5 minutes
     },
+    "refresh-hf-datasets-cache": {
+        "task": "app.tasks.dataset_tasks.refresh_hf_datasets_cache",
+        "schedule": 3600.0,  # Run every hour
+    },
 }
 
 # Signal handlers for monitoring and logging
@@ -81,7 +85,14 @@ def worker_shutdown_handler(**kwargs):
     """Log when worker is shutting down."""
     logger.info(f"Celery worker shutting down: {kwargs.get('hostname')}")
 
-# Expose the app for importing in other modules
 def get_celery_app():
     """Get the Celery app instance."""
+    # Import all tasks to ensure they're registered
+    try:
+        # Using the improved app.tasks module which properly imports all tasks
+        import app.tasks
+        logger.info(f"Tasks successfully imported; registered {len(celery_app.tasks)} tasks")
+    except ImportError as e:
+        logger.error(f"Error importing tasks: {e}")
+    
     return celery_app 

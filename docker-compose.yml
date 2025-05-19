@@ -55,7 +55,7 @@ services:
       - .:/app
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - WORKER_CONCURRENCY=5
+      - WORKER_CONCURRENCY=10
       - LOG_LEVEL=INFO
       - CELERY_QUEUE=dataset_impacts
     env_file:

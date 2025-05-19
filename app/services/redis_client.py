@@ -1,12 +1,13 @@
 """Redis client for caching and task queue management."""
 
-import asyncio
 import json
-from typing import Any, Dict, Optional, TypeVar, Generic, Callable
-from datetime import datetime, timezone
+from typing import Any, Dict, Optional, TypeVar
+from datetime import datetime
 import logging
+from time import time as _time
 
-import redis.asyncio as redis
+import redis.asyncio as redis_async
+import redis as redis_sync  # Import synchronous Redis client
 from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -18,24 +19,25 @@ T = TypeVar('T')
 # Configure logging
 log = logging.getLogger(__name__)
 
-# Redis connection pool for reusing connections
-_redis_pool = None
+# Redis connection pools for reusing connections
+_redis_pool_async = None
+_redis_pool_sync = None  # Synchronous pool
 
 # Default cache expiration (12 hours)
 DEFAULT_CACHE_EXPIRY = 60 * 60 * 12
 
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=1, max=10))
-async def get_redis_pool() -> redis.Redis:
-    """Get or create Redis connection pool with retry logic."""
-    global _redis_pool
+async def get_redis_pool() -> redis_async.Redis:
+    """Get or create async Redis connection pool with retry logic."""
+    global _redis_pool_async
     
-    if _redis_pool is None:
+    if _redis_pool_async is None:
         # Get Redis configuration from settings
         redis_url = settings.REDIS_URL or "redis://localhost:6379/0"
         
         try:
             # Create connection pool with reasonable defaults
-            _redis_pool = redis.ConnectionPool.from_url(
+            _redis_pool_async = redis_async.ConnectionPool.from_url(
                 redis_url,
                 max_connections=10,
                 decode_responses=True,
@@ -44,21 +46,55 @@ async def get_redis_pool() -> redis.Redis:
                 socket_keepalive=True,
                 retry_on_timeout=True
             )
-            log.info(f"Created Redis connection pool with URL: {redis_url}")
+            log.info(f"Created async Redis connection pool with URL: {redis_url}")
         except Exception as e:
-            log.error(f"Error creating Redis connection pool: {e}")
+            log.error(f"Error creating async Redis connection pool: {e}")
             raise
     
-    return redis.Redis(connection_pool=_redis_pool)
+    return redis_async.Redis(connection_pool=_redis_pool_async)
+
+def get_redis_pool_sync() -> redis_sync.Redis:
+    """Get or create synchronous Redis connection pool."""
+    global _redis_pool_sync
+    
+    if _redis_pool_sync is None:
+        # Get Redis configuration from settings
+        redis_url = settings.REDIS_URL or "redis://localhost:6379/0"
+        
+        try:
+            # Create connection pool with reasonable defaults
+            _redis_pool_sync = redis_sync.ConnectionPool.from_url(
+                redis_url,
+                max_connections=10,
+                decode_responses=True,
+                socket_connect_timeout=5,
+                socket_keepalive=True,
+                retry_on_timeout=True
+            )
+            log.info(f"Created sync Redis connection pool with URL: {redis_url}")
+        except Exception as e:
+            log.error(f"Error creating sync Redis connection pool: {e}")
+            raise
+    
+    return redis_sync.Redis(connection_pool=_redis_pool_sync)
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=5))
-async def get_redis() -> redis.Redis:
+async def get_redis() -> redis_async.Redis:
     """Get Redis client from pool with retry logic."""
     try:
         redis_client = await get_redis_pool()
         return redis_client
     except Exception as e:
         log.error(f"Error getting Redis client: {e}")
+        raise
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=5))
+def get_redis_sync() -> redis_sync.Redis:
+    """Get synchronous Redis client from pool with retry logic."""
+    try:
+        return get_redis_pool_sync()
+    except Exception as e:
+        log.error(f"Error getting synchronous Redis client: {e}")
         raise
 
 # Cache key generation
@@ -88,9 +124,9 @@ def _json_deserialize(data: str, model_class: Optional[type] = None) -> Any:
     
     return result
 
-# Cache operations
+# Async cache operations
 async def cache_set(key: str, value: Any, expire: int = DEFAULT_CACHE_EXPIRY) -> bool:
-    """Set cache value with expiration."""
+    """Set cache value with expiration (async version)."""
     redis_client = await get_redis()
     serialized = _json_serialize(value)
     
@@ -103,7 +139,7 @@ async def cache_set(key: str, value: Any, expire: int = DEFAULT_CACHE_EXPIRY) ->
         return False
 
 async def cache_get(key: str, model_class: Optional[type] = None) -> Optional[Any]:
-    """Get cache value with optional model deserialization."""
+    """Get cache value with optional model deserialization (async version)."""
     redis_client = await get_redis()
     
     try:
@@ -112,6 +148,40 @@ async def cache_get(key: str, model_class: Optional[type] = None) -> Optional[An
             return None
             
         log.debug(f"Cache hit for key: {key}")
+        return _json_deserialize(data, model_class)
+    except Exception as e:
+        log.error(f"Error retrieving cache for key {key}: {e}")
+        return None
+
+# Synchronous cache operations for Celery tasks
+def sync_cache_set(key: str, value: Any, expire: int = DEFAULT_CACHE_EXPIRY) -> bool:
+    """Set cache value with expiration (synchronous version for Celery tasks). Logs slow operations."""
+    redis_client = get_redis_sync()
+    serialized = _json_serialize(value)
+    start = _time()
+    try:
+        redis_client.set(key, serialized, ex=expire)
+        elapsed = _time() - start
+        if elapsed > 2:
+            log.warning(f"Slow sync_cache_set for key {key}: {elapsed:.2f}s")
+        log.debug(f"Cached data at key: {key}, expires in {expire}s (sync)")
+        return True
+    except Exception as e:
+        log.error(f"Error caching data at key {key}: {e}")
+        return False
+
+def sync_cache_get(key: str, model_class: Optional[type] = None) -> Optional[Any]:
+    """Get cache value with optional model deserialization (synchronous version for Celery tasks). Logs slow operations."""
+    redis_client = get_redis_sync()
+    start = _time()
+    try:
+        data = redis_client.get(key)
+        elapsed = _time() - start
+        if elapsed > 2:
+            log.warning(f"Slow sync_cache_get for key {key}: {elapsed:.2f}s")
+        if not data:
+            return None
+        log.debug(f"Cache hit for key: {key} (sync)")
         return _json_deserialize(data, model_class)
     except Exception as e:
         log.error(f"Error retrieving cache for key {key}: {e}")

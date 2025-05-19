@@ -1,9 +1,10 @@
 from enum import Enum
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Optional
 
 # Define the impact level as an enum for better type safety
 class ImpactLevel(str, Enum):
+    NA = "not_available"  # New category for when size information is unavailable
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
