@@ -12,6 +12,8 @@ import redis
 import gzip
 from datetime import datetime, timezone
 import os
+from app.schemas.dataset import ImpactAssessment
+from app.schemas.dataset_common import DatasetMetrics
 
 log = logging.getLogger(__name__)
 api = HfApi()
@@ -84,7 +86,7 @@ def get_dataset_commits(dataset_id: str, limit: int = 20):
     return result
 
 def get_dataset_files(dataset_id: str) -> List[str]:
-    return api.list_repo_files(dataset_id, repo_type="dataset")
+    return api.list_repo_files(repo_id=dataset_id, repo_type="dataset")
 
 def get_file_url(dataset_id: str, filename: str, revision: Optional[str] = None) -> str:
     from huggingface_hub import hf_hub_url
@@ -118,100 +120,106 @@ def get_datasets_page_from_zset(offset: int = 0, limit: int = 10, search: str = 
         parsed = [d for d in parsed if search.lower() in (d.get("id") or "").lower()]
     return {"items": parsed, "count": total}
 
-def refresh_datasets_cache():
-    """Fetch all datasets (200,000+) from HuggingFace and stream batches to Redis as a stream (XADD)."""
+def process_datasets_page(offset, limit):
+    """
+    Fetch and process a single page of datasets from Hugging Face and cache them in Redis.
+    """
     import redis
-    log.info("[refresh_datasets_cache] Fetching ALL datasets from HuggingFace via local proxy (streaming to Redis Stream).")
+    import os
+    import time
+    import json
+    log = logging.getLogger(__name__)
+    token = os.environ.get("HUGGINGFACEHUB_API_TOKEN")
+    if not token:
+        raise RuntimeError("HUGGINGFACEHUB_API_TOKEN environment variable is not set. Please set it securely.")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "Mozilla/5.0 (compatible; CollinearTool/1.0; +https://yourdomain.com)"
+    }
+    proxy_url = "http://host.docker.internal:8080/api/datasets"
+    params = {"limit": limit, "offset": offset, "full": "True"}
+    redis_client = redis.Redis(host="redis", port=6379, db=0, decode_responses=True)
+    stream_key = "hf:datasets:all:stream"
+    zset_key = "hf:datasets:all:zset"
+    hash_key = "hf:datasets:all:hash"
     try:
-        token = os.environ.get("HUGGINGFACEHUB_API_TOKEN")
-        if not token:
-            raise RuntimeError("HUGGINGFACEHUB_API_TOKEN environment variable is not set. Please set it securely.")
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "User-Agent": "Mozilla/5.0 (compatible; CollinearTool/1.0; +https://yourdomain.com)"
-        }
-        proxy_url = "http://host.docker.internal:8080/api/datasets"
-        page_size = 500
-        offset = 0
-        redis_client = redis.Redis(host="redis", port=6379, db=0, decode_responses=True)
-        stream_key = "hf:datasets:all:stream"
-        # Delete previous stream
-        redis_client.delete(stream_key)
-        total = 0
-        while True:
-            params = {"limit": page_size, "offset": offset, "full": "True"}
-            for attempt in range(5):
-                try:
-                    response = requests.get(proxy_url, headers=headers, params=params, timeout=120)
-                    response.raise_for_status()
-                    break
-                except requests.exceptions.RequestException as e:
-                    log.warning(f"[refresh_datasets_cache] Request failed (attempt {attempt+1}): {e}")
-                    if attempt == 4:
-                        raise
-                    time.sleep(2 ** attempt)
-            page = response.json()
-            if not page:
-                break
-            for ds in page:
-                dataset_id = ds.get("id")
-                card_data = ds.get("cardData") or {}
-                # Fetch accurate size_bytes from Datasets Server API
-                size_bytes = None
-                try:
-                    size_url = f"https://datasets-server.huggingface.co/size?dataset={dataset_id}"
-                    # Do NOT use Authorization header for this API
-                    size_resp = requests.get(size_url, timeout=30)
-                    log.info(f"[refresh_datasets_cache] Size API {dataset_id} status: {size_resp.status_code}")
-                    if size_resp.ok:
-                        size_data = size_resp.json()
-                        log.info(f"[refresh_datasets_cache] Size API {dataset_id} response: {size_data}")
-                        size_bytes = size_data.get("size", {}).get("dataset", {}).get("num_bytes_original_files")
-                    else:
-                        log.warning(f"[refresh_datasets_cache] Size API {dataset_id} failed: {size_resp.text}")
-                except Exception as e:
-                    log.warning(f"[refresh_datasets_cache] Could not fetch size for {dataset_id}: {e}")
-                time.sleep(0.1)  # avoid rate limiting
-                downloads = ds.get("downloads")
-                likes = ds.get("likes")
-                # Always compute impact_level from criteria
-                impact_level, _ = determine_impact_level_by_criteria(size_bytes, downloads, likes)
-                item = {
-                    "id": dataset_id,
-                    "name": ds.get("name"),
-                    "description": ds.get("description"),
-                    "size_bytes": size_bytes,
-                    "impact_level": impact_level,
-                    "downloads": downloads,
-                    "likes": likes,
-                    "tags": json.dumps(ds.get("tags", [])),
-                    "impact_assessment": json.dumps(ds.get("impact_assessment", {}))
+        response = requests.get(proxy_url, headers=headers, params=params, timeout=120)
+        response.raise_for_status()
+        page = response.json()
+        for ds in page:
+            dataset_id = ds.get("id")
+            card_data = ds.get("cardData") or {}
+            # Fetch accurate size_bytes from Datasets Server API
+            size_bytes = None
+            try:
+                size_url = f"https://datasets-server.huggingface.co/size?dataset={dataset_id}"
+                size_resp = requests.get(size_url, timeout=30)
+                if size_resp.ok:
+                    size_data = size_resp.json()
+                    size_bytes = size_data.get("size", {}).get("dataset", {}).get("num_bytes_original_files")
+            except Exception as e:
+                log.warning(f"Could not fetch size for {dataset_id}: {e}")
+            time.sleep(0.1)  # avoid rate limiting
+            downloads = ds.get("downloads")
+            likes = ds.get("likes")
+            impact_level, assessment_method = determine_impact_level_by_criteria(size_bytes, downloads, likes)
+            # Build impact_assessment
+            metrics = DatasetMetrics(size_bytes=size_bytes, downloads=downloads, likes=likes)
+            thresholds = {
+                "size_bytes": {
+                    "low": str(100 * 1024 * 1024),
+                    "medium": str(1 * 1024 * 1024 * 1024),
+                    "high": str(10 * 1024 * 1024 * 1024)
                 }
-                # Ensure all values are str, int, float, or bytes, and convert None to 'null'
-                for k, v in item.items():
-                    if v is None:
-                        item[k] = 'null'
-                    elif not isinstance(v, (str, int, float, bytes)):
-                        item[k] = json.dumps(v)
-                redis_client.xadd(stream_key, item)
-                # Hybrid: also upsert into Sorted Set and Hash
-                zset_key = "hf:datasets:all:zset"
-                hash_key = "hf:datasets:all:hash"
-                redis_client.zadd(zset_key, {dataset_id: offset + total})
-                redis_client.hset(hash_key, dataset_id, json.dumps(item))
-                total += 1
-            log.info(f"[refresh_datasets_cache] Streamed {len(page)} datasets (offset {offset}), total so far: {total}")
-            if len(page) < page_size:
-                break
-            offset += page_size
-        log.info(f"[refresh_datasets_cache] Total datasets streamed to Redis Stream: {total}")
-        # Store meta info
-        meta_key = "hf:datasets:meta"
-        meta = {"last_update": datetime.now(timezone.utc).isoformat(), "total_items": total}
-        redis_client.set(meta_key, json.dumps(meta))
-        log.info(json.dumps({"event": "refresh_datasets_cache", "total_items": total, "timestamp": meta["last_update"]}))
-    except Exception as e:
-        log.error(f"[refresh_datasets_cache] Exception: {e}", exc_info=True)
+            }
+            impact_assessment = ImpactAssessment(
+                dataset_id=dataset_id,
+                impact_level=impact_level,
+                assessment_method=assessment_method,
+                metrics=metrics,
+                thresholds=thresholds
+            ).dict()
+            item = {
+                "id": dataset_id,
+                "name": ds.get("name"),
+                "description": ds.get("description"),
+                "size_bytes": size_bytes,
+                "impact_level": impact_level,
+                "downloads": downloads,
+                "likes": likes,
+                "tags": json.dumps(ds.get("tags", [])),
+                "impact_assessment": json.dumps(impact_assessment)
+            }
+            for k, v in item.items():
+                if v is None:
+                    item[k] = 'null'
+                elif not isinstance(v, (str, int, float, bytes)):
+                    item[k] = json.dumps(v)
+            redis_client.xadd(stream_key, item)
+            redis_client.zadd(zset_key, {dataset_id: offset})
+            redis_client.hset(hash_key, dataset_id, json.dumps(item))
+        log.info(f"[process_datasets_page] Cached {len(page)} datasets at offset {offset}")
+        return len(page)
+    except Exception as exc:
+        log.error(f"[process_datasets_page] Error at offset {offset}: {exc}")
+        raise
+
+def refresh_datasets_cache():
+    """
+    Orchestrator: Enqueue Celery tasks to fetch all Hugging Face datasets in parallel.
+    """
+    import math
+    log.info("[refresh_datasets_cache] Orchestrating parallel dataset fetch tasks.")
+    # Estimate total number of datasets (or fetch from meta API if available)
+    total = 200_000
+    limit = 500
+    num_pages = math.ceil(total / limit)
+    # Import fetch_datasets_page here to avoid circular import
+    from app.tasks.dataset_tasks import fetch_datasets_page
+    for page in range(num_pages):
+        offset = page * limit
+        fetch_datasets_page.delay(offset, limit)
+    log.info(f"[refresh_datasets_cache] Enqueued {num_pages} parallel fetch tasks.")
 
 def determine_impact_level_by_criteria(size_bytes, downloads=None, likes=None):
     """

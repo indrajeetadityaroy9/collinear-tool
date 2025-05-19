@@ -15,7 +15,7 @@ passlib>=1.7.4
 celery>=5.3.4
 
 # Hugging Face integration
-huggingface_hub>=0.17.0
+huggingface_hub>=0.20.0
 sentry-sdk>=1.28.1
 
 # Database

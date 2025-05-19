@@ -1,4 +1,4 @@
-.PHONY: clean-all build up rebuild
+.PHONY: clean-all build up rebuild cache-status
 
 # Remove all stopped containers, images, and volumes (DANGEROUS: use with care)
 clean-all:
@@ -16,4 +16,8 @@ up:
 	docker-compose up
 
 # Clean, build, and start everything fresh
-rebuild: clean-all build up 
+rebuild: clean-all build up
+
+# Check the number of cached datasets in Redis
+cache-status:
+	docker compose exec api python -c "import redis; r = redis.Redis(host='redis', port=6379, decode_responses=True); print('Datasets cached:', r.zcard('hf:datasets:all:zset'))" 
