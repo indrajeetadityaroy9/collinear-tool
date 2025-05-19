@@ -1,9 +1,7 @@
 """Celery configuration for task processing."""
 
 import logging
-import os
 from celery import Celery
-from kombu.utils.url import maybe_sanitize_url
 from celery.signals import task_failure, task_success, worker_ready, worker_shutdown
 
 from app.core.config import settings
@@ -35,6 +33,8 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     broker_connection_max_retries=10,
     broker_pool_limit=10,  # Connection pool size
+    result_expires=60 * 60 * 24,  # Results expire after 24 hours
+    task_track_started=True,      # Track when tasks are started
 )
 
 # Set up task routes for different task types

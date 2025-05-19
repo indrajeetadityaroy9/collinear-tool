@@ -208,26 +208,6 @@ async def get_task_result(queue_name: str, task_id: str) -> Optional[Dict[str, A
         log.error(f"Error getting result for task {task_id}: {e}")
         return None
 
-# Rate limiting
-async def check_rate_limit(key: str, limit: int, window: int = 60) -> bool:
-    """Check if rate limit is exceeded."""
-    redis_client = await get_redis()
-    
-    try:
-        current = await redis_client.get(key)
-        if current and int(current) >= limit:
-            return False
-            
-        pipe = redis_client.pipeline()
-        pipe.incr(key)
-        pipe.expire(key, window)
-        await pipe.execute()
-        
-        return True
-    except Exception as e:
-        log.error(f"Error checking rate limit for {key}: {e}")
-        return True  # Default to allowing on error
-
 # Stream processing for real-time updates
 async def add_to_stream(stream: str, data: Dict[str, Any], max_len: int = 1000) -> str:
     """Add event to Redis stream."""

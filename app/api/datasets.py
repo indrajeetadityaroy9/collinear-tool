@@ -37,8 +37,7 @@ from app.schemas.dataset import (
     DatasetCreate, 
     DatasetUpdate,
     DatasetCombineRequest,
-    CombinedDataset,
-    list_combined_files
+    CombinedDataset
 )
 from app.core.config import settings, Settings
 from app.services.redis_client import cache_get, cache_set, generate_cache_key
@@ -93,7 +92,16 @@ async def list_datasets_endpoint(
         # Try to get from cache
         cached_data = await cache_get(cache_key)
         if cached_data:
-            return PaginatedResponse(**cached_data)
+            # Defensive: if cached_data is a dict with 'items', ensure 'items' is a list
+            if isinstance(cached_data, dict) and 'items' in cached_data:
+                if not isinstance(cached_data['items'], list):
+                    cached_data['items'] = []
+                return PaginatedResponse(**cached_data)
+            # If cached_data is a list, wrap it
+            if isinstance(cached_data, list):
+                return PaginatedResponse(items=cached_data, count=len(cached_data), limit=limit, offset=offset)
+            # Otherwise, fallback to empty response
+            return PaginatedResponse(items=[], count=0, limit=limit, offset=offset)
     
     # Fetch fresh data
     results = await list_datasets_async(
@@ -114,20 +122,16 @@ async def list_datasets_endpoint(
         response_data = results
     else:
         # Otherwise, assume it's just a list of items and estimate the count
-        # Make sure results is not a coroutine by ensuring it's already awaited
         if not isinstance(results, list):
-            # If somehow we got a coroutine, await it first (should not happen normally)
             try:
                 import inspect
                 if inspect.iscoroutine(results):
                     results = await results
             except Exception as e:
-                # In case of any error, return an empty list for safety
                 results = []
-        
         response_data = {
-            "items": results,
-            "count": len(results) + (offset or 0),  # Simple estimation, handle None offset
+            "items": results if isinstance(results, list) else [],
+            "count": len(results) + (offset or 0) if isinstance(results, list) else 0,
         }
     
     # Add pagination metadata
@@ -465,20 +469,28 @@ async def file_url_endpoint(
             filename=filename,
             revision=revision
         )
-        return {"url": url}
+        return {"download_url": url}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting file URL: {str(e)}")
 
 @router.post("/{dataset_id:path}/follow", status_code=204)
 async def follow_endpoint(request: Request, dataset_id: str, user: User = Depends(get_current_user)):
     """Follow a dataset."""
-    await follow_dataset(user.id, dataset_id)
+    jwt = None
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        jwt = auth_header.split(" ", 1)[1]
+    await follow_dataset(user.id, dataset_id, jwt)
     return Response(status_code=204)
     
 @router.delete("/{dataset_id:path}/follow", status_code=204)
 async def unfollow_endpoint(request: Request, dataset_id: str, user: User = Depends(get_current_user)):
     """Unfollow a dataset."""
-    await unfollow_dataset(user.id, dataset_id) 
+    jwt = None
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        jwt = auth_header.split(" ", 1)[1]
+    await unfollow_dataset(user.id, dataset_id, jwt)
     return Response(status_code=204)
     
 @router.post("/", response_model=Dataset, status_code=201)
@@ -693,13 +705,14 @@ async def list_combined_files_endpoint(
 ) -> List[str]:
     """
     List files in a combined dataset.
-    
     This endpoint returns a list of files in the combined dataset storage.
     """
     # Get JWT from request for authentication
     jwt = None
-    auth_header = request.headers.get("authorization")
-    if auth_header and auth_header.lower().startswith("bearer "):
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
         jwt = auth_header.split(" ", 1)[1]
-    
-    return await list_combined_files(combined_id, jwt)
+    # list_combined_files is not implemented; raise HTTP 501
+    from fastapi import HTTPException
+    raise HTTPException(status_code=501, detail="Listing files in a combined dataset is not implemented.")
+    # return await list_combined_files(combined_id, jwt)

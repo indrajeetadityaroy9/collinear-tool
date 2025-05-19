@@ -45,7 +45,7 @@ async def health_check() -> Dict[str, Any]:
     }
     
     # Check Redis if enabled
-    if settings.enable_redis_cache:
+    if settings.ENABLE_REDIS_CACHE:
         try:
             # Generate a random key to test Redis
             test_key = generate_cache_key("health", "check")
@@ -116,7 +116,7 @@ async def readiness_check():
     checks = {"status": "ready", "checks": {}}
     
     # Check Redis connectivity
-    if settings.enable_redis_cache:
+    if settings.ENABLE_REDIS_CACHE:
         try:
             test_key = generate_cache_key("health", "ready")
             await cache_set(test_key, {"timestamp": time.time()}, expire=60)
@@ -151,7 +151,7 @@ async def mock_dataset_impact(dataset_id: str, skip_cache: bool = False) -> Dict
     cache_key = generate_cache_key("mock-impact", dataset_id)
     
     # Try to get from cache if caching is enabled and not skipping cache
-    if settings.enable_redis_cache and not skip_cache:
+    if settings.ENABLE_REDIS_CACHE and not skip_cache:
         cached_data = await cache_get(cache_key)
         if cached_data:
             return cached_data
@@ -184,7 +184,7 @@ async def mock_dataset_impact(dataset_id: str, skip_cache: bool = False) -> Dict
     }
     
     # Cache the result
-    if settings.enable_redis_cache and not skip_cache:
+    if settings.ENABLE_REDIS_CACHE and not skip_cache:
         await cache_set(cache_key, result, expire=60 * 5)  # 5 minutes
     
     return result

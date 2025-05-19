@@ -1,26 +1,31 @@
-from fastapi import FastAPI
-from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
 from app.api import api_router
-from app.api.health import supabase_alive
-import logging
-import sys
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from app.core.exceptions import SupabaseClientError
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(levelname)s | %(name)s | %(message)s",
-    stream=sys.stdout,
-    force=True,
+app = FastAPI(title="Collinear API")
+
+# Enable CORS for the frontend
+frontend_origin = "http://localhost:5173"
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[frontend_origin],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logger = logging.getLogger("collinear")
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    if await supabase_alive():
-        logging.info("Supabase connectivity check passed")
-    else:
-        logging.warning("Supabase unreachable")
-    yield
-
-app = FastAPI(title="Collinear API", lifespan=lifespan)
 app.include_router(api_router, prefix="/api")
+
+@app.get("/")
+async def root():
+    return {"message": "Welcome to the Collinear Data Tool API"}
+
+@app.exception_handler(SupabaseClientError)
+async def supabase_error_handler(request: Request, exc: SupabaseClientError):
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

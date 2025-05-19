@@ -5,12 +5,14 @@ pydantic>=2.0.0
 pydantic-settings>=2.0.0
 tenacity>=8.2.2
 httpx>=0.24.1
+requests>=2.31.0  # For file downloads
 email-validator>=2.0.0  # Required by pydantic for email validation
-python-jose>=3.3.0  # Required for JWT handling
+python-jose[cryptography]>=3.3.0
+bcrypt>=4.0.0
+passlib>=1.7.4
 
 # Task processing
 celery>=5.3.4
-flower>=2.0.1  # Celery monitoring
 
 # Hugging Face integration
 huggingface_hub>=0.17.0
@@ -18,7 +20,7 @@ sentry-sdk>=1.28.1
 
 # Database
 postgrest>=0.10.6
-supabase>=1.0.3
+supabase==2.15.1
 
 # Caching and async processing
 redis>=4.5.0,<5.0.0

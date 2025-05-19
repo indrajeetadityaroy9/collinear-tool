@@ -24,13 +24,19 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_PASSWORD: Optional[SecretStr] = None
     
-    # Caching settings
+    # Toggle Redis cache layer
     ENABLE_REDIS_CACHE: bool = True
-    CACHE_TTL: int = 3600  # Default: 1 hour
+
+    # ──────────────────────────────── Security ────────────────────────────────
+    # JWT secret key. NEVER hard-code in source; override with env variable in production.
+    SECRET_KEY: SecretStr = Field("change-me", env="SECRET_KEY")
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(60 * 24 * 7, env="ACCESS_TOKEN_EXPIRE_MINUTES")  # 1 week by default
 
     # Worker settings
     WORKER_CONCURRENCY: int = 5
-    WORKER_BATCH_SIZE: int = 50
+
+    # Batch processing chunk size for Celery dataset tasks
+    DATASET_BATCH_CHUNK_SIZE: int = 50
 
     # Tell pydantic-settings to auto-load `.env` if present
     model_config: Final = SettingsConfigDict(

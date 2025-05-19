@@ -7,7 +7,10 @@ BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8000/api")
 def test_list_datasets(client):
     resp = client.get(f"{BASE_URL}/datasets")
     assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    data = resp.json()
+    assert isinstance(data, dict)
+    assert "items" in data
+    assert isinstance(data["items"], list)
 
 
 def test_commit_history(client):

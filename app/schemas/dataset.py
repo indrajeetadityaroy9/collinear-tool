@@ -1,21 +1,19 @@
+import uuid
+import hashlib
+import logging
 from enum import Enum
+from typing import Dict, List, Optional, Any
+from datetime import datetime
 from pydantic import BaseModel, Field
-from typing import Dict, Literal, Optional, List
 
-# Define the impact level as an enum for better type safety
-class ImpactLevel(str, Enum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
+from app.schemas.dataset_common import ImpactLevel, DatasetMetrics
 
-# Define metrics for impact assessment
-class DatasetMetrics(BaseModel):
-    size_bytes: Optional[int] = Field(None, description="Size of the dataset in bytes")
-    file_count: Optional[int] = Field(None, description="Number of files in the dataset")
-    downloads: Optional[int] = Field(None, description="Number of downloads (all time)")
-    likes: Optional[int] = Field(None, description="Number of likes")
+# Log for this module
+log = logging.getLogger(__name__)
 
-# Define a schema for impact assessment response
+# Supported strategies for dataset combination
+SUPPORTED_STRATEGIES = ["merge", "intersect", "filter"]
+
 class ImpactAssessment(BaseModel):
     dataset_id: str = Field(..., description="The ID of the dataset being assessed")
     impact_level: ImpactLevel = Field(..., description="The impact level: low, medium, or high")
@@ -28,45 +26,59 @@ class ImpactAssessment(BaseModel):
         description="Metrics used for impact assessment"
     )
     thresholds: Dict[str, Dict[str, str]] = Field(
-        ...,
-        description="The thresholds used for determining impact levels for each metric",
+        {},
+        description="Thresholds used for determining impact levels (for reference)"
     )
 
-# Define a schema for dataset list response
 class DatasetInfo(BaseModel):
     id: str
     impact_level: Optional[ImpactLevel] = None
     impact_assessment: Optional[Dict] = None
     # Add other fields as needed
-    
     class Config:
         extra = "allow"  # Allow extra fields from the API
 
-# Define base dataset schema for shared attributes
 class DatasetBase(BaseModel):
     name: str
     description: Optional[str] = None
     tags: Optional[List[str]] = None
-    
-# Define schema for dataset creation
+
 class DatasetCreate(DatasetBase):
-    # Add fields specific to creation
-    # For example, file paths or URLs
     files: Optional[List[str]] = None
 
-# Define schema for dataset update
 class DatasetUpdate(DatasetBase):
     name: Optional[str] = None  # Make fields optional for updates
-    
-# Define complete dataset schema with all fields
+
 class Dataset(DatasetBase):
     id: int  # or str depending on your ID format
     owner_id: str  # Assuming user IDs are strings
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
-    
     class Config:
         orm_mode = True  # For ORM compatibility if using an ORM
 
+class DatasetCombineRequest(BaseModel):
+    source_datasets: List[str] = Field(..., description="List of dataset IDs to combine")
+    name: str = Field(..., description="Name for the combined dataset")
+    description: Optional[str] = Field(None, description="Description for the combined dataset")
+    combination_strategy: str = Field("merge", description="Strategy to use when combining datasets (e.g., 'merge', 'intersect', 'filter')")
+    filter_criteria: Optional[Dict[str, Any]] = Field(None, description="Criteria for filtering when combining datasets")
+
+class CombinedDataset(BaseModel):
+    id: str = Field(..., description="ID of the combined dataset")
+    name: str = Field(..., description="Name of the combined dataset")
+    description: Optional[str] = Field(None, description="Description of the combined dataset")
+    source_datasets: List[str] = Field(..., description="IDs of the source datasets")
+    created_at: datetime = Field(..., description="Creation timestamp")
+    created_by: str = Field(..., description="ID of the user who created this combined dataset")
+    impact_level: Optional[ImpactLevel] = Field(None, description="Calculated impact level of the combined dataset")
+    status: str = Field("processing", description="Status of the dataset combination process")
+    combination_strategy: str = Field(..., description="Strategy used when combining datasets")
+    metrics: Optional[DatasetMetrics] = Field(None, description="Metrics for the combined dataset")
+    storage_bucket_id: Optional[str] = Field(None, description="ID of the storage bucket containing dataset files")
+    storage_folder_path: Optional[str] = Field(None, description="Path to the dataset files within the bucket")
+    class Config:
+        extra = "allow"  # Allow extra fields for flexibility
+
 __all__ = ["ImpactLevel", "ImpactAssessment", "DatasetInfo", "DatasetMetrics", 
-           "Dataset", "DatasetCreate", "DatasetUpdate"] 
+           "Dataset", "DatasetCreate", "DatasetUpdate", "DatasetCombineRequest", "CombinedDataset"] 

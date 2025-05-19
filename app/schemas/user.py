@@ -1,11 +1,18 @@
 # app/schemas/user.py
 from pydantic import BaseModel, EmailStr
+from typing import Optional
+from datetime import datetime
 
-class User(BaseModel):
-    """Lightweight user object returned by `current_user` dependency.
-
-    Only the fields you really use elsewhere are kept.
-    Add more whenever you need them.
-    """
-    id: str
+class UserBase(BaseModel):
     email: EmailStr
+    name: Optional[str] = None
+
+class UserCreate(UserBase):
+    password: str
+
+class User(UserBase):
+    id: str
+    created_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True

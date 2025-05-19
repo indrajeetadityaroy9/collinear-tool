@@ -22,7 +22,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 
 # Token schemas
 class Token(BaseModel):
-    token: str
+    access_token: str
     token_type: str = "bearer"
 
 class TokenData(BaseModel):
@@ -37,7 +37,7 @@ class LoginCredentials(BaseModel):
 class RegisterCredentials(BaseModel):
     email: EmailStr
     password: str
-    name: str
+    name: str = "Test User"
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
@@ -60,7 +60,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 async def get_user_by_email(email: str):
     """Retrieve user by e-mail using a cached service-role Supabase client (no JWT needed)."""
     supabase = get_cached_supabase_service_client()
-    response = supabase.table("users").select("*").eq("email", email).execute()
+    response = supabase.table("users", schema="auth").select("*").eq("email", email).execute()
     if response.data and len(response.data) > 0:
         return response.data[0]
     return None
@@ -96,56 +96,43 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 # Auth endpoints
 @router.post("/login", response_model=Token)
 async def login(credentials: LoginCredentials):
-    user = await authenticate_user(credentials.email, credentials.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-        
-    access_token = create_access_token(
-        data={"sub": user["email"]}
-    )
-    
-    return {"token": access_token, "token_type": "bearer"}
+    supabase = get_cached_supabase_service_client()
+    try:
+        res = supabase.auth.sign_in_with_password({
+            "email": credentials.email,
+            "password": credentials.password
+        })
+        if not res.session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        access_token = res.session.access_token
+        return {"access_token": access_token, "token_type": "bearer"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
 
 @router.post("/register", status_code=status.HTTP_201_CREATED, response_model=Token)
 async def register(credentials: RegisterCredentials):
-    # Check if user already exists
-    existing_user = await get_user_by_email(credentials.email)
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
-    
-    # Hash the password
-    hashed_password = hash_password(credentials.password)
-    
-    # Create new user in database
     supabase = get_cached_supabase_service_client()
-    user_data = {
-        "email": credentials.email,
-        "password": hashed_password,
-        "name": credentials.name,
-        "created_at": datetime.utcnow().isoformat()
-    }
-    
-    response = supabase.table("users").insert(user_data).execute()
-    
-    if not response.data or len(response.data) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail="Failed to create user"
-        )
-    
-    # Generate access token
-    access_token = create_access_token(
-        data={"sub": credentials.email}
-    )
-    
-    return {"token": access_token, "token_type": "bearer"}
+    try:
+        res = supabase.auth.sign_up({
+            "email": credentials.email,
+            "password": credentials.password
+        })
+        if not res.user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Registration failed or email already registered"
+            )
+        access_token = res.session.access_token if res.session else None
+        return {"access_token": access_token or "", "token_type": "bearer"}
+    except Exception as e:
+        # If duplicate email, return 400 or 409
+        if "User already registered" in str(e) or "already registered" in str(e):
+            raise HTTPException(status_code=409, detail="Email already registered")
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
 @router.get("/me", response_model=User)
 async def get_user_profile(current_user: dict = Depends(get_current_user)):
