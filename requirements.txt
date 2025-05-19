@@ -1,7 +1,7 @@
 # Core dependencies
-fastapi>=0.100.0
-uvicorn>=0.23.0
-pydantic>=2.0.0
+fastapi==0.99.1
+uvicorn==0.22.0
+pydantic==1.10.12
 pydantic-settings>=2.0.0
 tenacity>=8.2.2
 httpx>=0.24.1
@@ -43,4 +43,7 @@ pytest-cov>=4.1.0
 freezegun>=1.2.2
 
 # Development dependencies
-python-dotenv>=1.0.0 
+python-dotenv>=1.0.0
+
+# Added from the code block
+gunicorn==21.2.0 
