@@ -5,15 +5,15 @@ set -o nounset
 
 echo "Starting Celery worker..."
 
-# Pre-import tasks to ensure they're registered with Celery
+
 python -c "import app.tasks.dataset_tasks; print('Task modules imported and registered successfully.')"
 
-# Use prefork pool for better concurrency
-# Note: if task workers hang or crash, try --pool=solo instead
+
+
 exec celery -A app.core.celery_app worker \
     --loglevel=${LOG_LEVEL:-INFO} \
     -Q ${CELERY_QUEUE:-dataset_impacts} \
     --concurrency=${WORKER_CONCURRENCY:-10} \
     --pool=prefork \
     -E \
-    --include=app.tasks.dataset_tasks 
+    --include=app.tasks.dataset_tasks

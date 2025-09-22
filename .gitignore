@@ -1,11 +1,11 @@
 __pycache__/
 *.pyc
 
-# Pytest cache
+
 .pytest_cache/
 
-# Performance results
+
 perf_results_*.json
 
-# Celery Beat schedule file
+
 celerybeat-schedule

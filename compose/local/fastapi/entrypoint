@@ -4,7 +4,7 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
-# Wait for Redis to be ready before starting services
+
 redis_ready() {
     redis-cli -h redis -p 6379 ping | grep PONG
 }
@@ -16,5 +16,5 @@ until redis_ready; do
 done
 >&2 echo 'Redis is up - continuing...'
 
-# Execute the command
-exec "$@" 
+
+exec "$@"

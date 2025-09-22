@@ -5,17 +5,17 @@ from pydantic import BaseModel, Field
 
 from app.schemas.dataset_common import ImpactLevel, DatasetMetrics
 
-# Log for this module
+
 log = logging.getLogger(__name__)
 
-# Supported strategies for dataset combination
+
 SUPPORTED_STRATEGIES = ["merge", "intersect", "filter"]
 
 class ImpactAssessment(BaseModel):
     dataset_id: str = Field(..., description="The ID of the dataset being assessed")
     impact_level: ImpactLevel = Field(..., description="The impact level: low, medium, or high")
     assessment_method: str = Field(
-        "unknown", 
+        "unknown",
         description="Method used to determine impact level (e.g., size_based, downloads_and_likes_based)"
     )
     metrics: DatasetMetrics = Field(
@@ -31,9 +31,9 @@ class DatasetInfo(BaseModel):
     id: str
     impact_level: Optional[ImpactLevel] = None
     impact_assessment: Optional[Dict] = None
-    # Add other fields as needed
+
     class Config:
-        extra = "allow"  # Allow extra fields from the API
+        extra = "allow"
 
 class DatasetBase(BaseModel):
     name: str
@@ -44,15 +44,15 @@ class DatasetCreate(DatasetBase):
     files: Optional[List[str]] = None
 
 class DatasetUpdate(DatasetBase):
-    name: Optional[str] = None  # Make fields optional for updates
+    name: Optional[str] = None
 
 class Dataset(DatasetBase):
-    id: int  # or str depending on your ID format
-    owner_id: str  # Assuming user IDs are strings
+    id: int
+    owner_id: str
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     class Config:
-        pass  # Removed orm_mode = True since ORM is not used
+        pass
 
 class DatasetCombineRequest(BaseModel):
     source_datasets: List[str] = Field(..., description="List of dataset IDs to combine")
@@ -75,7 +75,7 @@ class CombinedDataset(BaseModel):
     storage_bucket_id: Optional[str] = Field(None, description="ID of the storage bucket containing dataset files")
     storage_folder_path: Optional[str] = Field(None, description="Path to the dataset files within the bucket")
     class Config:
-        extra = "allow"  # Allow extra fields for flexibility
+        extra = "allow"
 
-__all__ = ["ImpactLevel", "ImpactAssessment", "DatasetInfo", "DatasetMetrics", 
-           "Dataset", "DatasetCreate", "DatasetUpdate", "DatasetCombineRequest", "CombinedDataset"] 
+__all__ = ["ImpactLevel", "ImpactAssessment", "DatasetInfo", "DatasetMetrics",
+           "Dataset", "DatasetCreate", "DatasetUpdate", "DatasetCombineRequest", "CombinedDataset"]

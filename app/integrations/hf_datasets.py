@@ -36,7 +36,7 @@ async def _fetch_size(session: httpx.AsyncClient, dataset_id: str) -> Optional[i
         if resp.status_code == 200:
             data = resp.json()
             return data.get("size", {}).get("dataset", {}).get("num_bytes_original_files")
-    except Exception as exc:  # pragma: no cover - best-effort telemetry
+    except Exception as exc:
         log.warning("Could not fetch size for %s: %s", dataset_id, exc)
     return None
 
@@ -234,7 +234,7 @@ async def get_dataset_commits_async(dataset_id: str, limit: int = 20):
                     "date": date,
                 }
             )
-        except Exception as exc:  # pragma: no cover - defensive logging around vendor objects
+        except Exception as exc:
             log.error("[get_dataset_commits_async] Error parsing commit: %s", exc, exc_info=True)
     return result
 
@@ -264,7 +264,7 @@ async def get_file_url_async(dataset_id: str, filename: str, revision: Optional[
 class EnhancedJSONEncoder(json.JSONEncoder):
     """JSON encoder that understands datetime objects."""
 
-    def default(self, obj):  # type: ignore[override]
+    def default(self, obj):
         if isinstance(obj, datetime):
             return obj.isoformat()
         return super().default(obj)
@@ -278,7 +278,7 @@ async def fetch_size(session: httpx.AsyncClient, dataset_id, token=None):
         if resp.status_code == 200:
             data = resp.json()
             return dataset_id, data.get("size", {}).get("dataset", {}).get("num_bytes_original_files")
-    except Exception as exc:  # pragma: no cover - telemetry only
+    except Exception as exc:
         log.warning("Could not fetch size for %s: %s", dataset_id, exc)
     return dataset_id, None
 

@@ -1,5 +1,5 @@
 """Celery task packages."""
 
-from . import dataset_tasks  # noqa: F401
+from . import dataset_tasks
 
 __all__ = ["dataset_tasks"]

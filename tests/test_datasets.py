@@ -1,10 +1,9 @@
 import os
-import pytest
 import requests
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8000/api")
 
-# --- /datasets ---
+
 def test_list_datasets_http():
     resp = requests.get(f"{BASE_URL}/datasets")
     assert resp.status_code == 200
@@ -31,7 +30,7 @@ def test_list_datasets_invalid_limit_http():
     resp = requests.get(f"{BASE_URL}/datasets?limit=-5")
     assert resp.status_code == 422
 
-# --- /datasets/cache-status ---
+
 def test_cache_status_http():
     resp = requests.get(f"{BASE_URL}/datasets/cache-status")
     assert resp.status_code == 200
@@ -40,7 +39,7 @@ def test_cache_status_http():
     assert "total_items" in data
     assert "last_update" in data
 
-# --- /datasets/{dataset_id}/commits ---
+
 def test_commits_valid_http():
     resp = requests.get(f"{BASE_URL}/datasets/openbmb/Ultra-FineWeb/commits")
     assert resp.status_code in (200, 404)
@@ -51,7 +50,7 @@ def test_commits_invalid_http():
     resp = requests.get(f"{BASE_URL}/datasets/invalid-dataset-id/commits")
     assert resp.status_code in (404, 422)
 
-# --- /datasets/{dataset_id}/files ---
+
 def test_files_valid_http():
     resp = requests.get(f"{BASE_URL}/datasets/openbmb/Ultra-FineWeb/files")
     assert resp.status_code in (200, 404)
@@ -62,7 +61,7 @@ def test_files_invalid_http():
     resp = requests.get(f"{BASE_URL}/datasets/invalid-dataset-id/files")
     assert resp.status_code in (404, 422)
 
-# --- /datasets/{dataset_id}/file-url ---
+
 def test_file_url_valid_http():
     resp = requests.get(f"{BASE_URL}/datasets/openbmb/Ultra-FineWeb/file-url", params={"filename": "README.md"})
     assert resp.status_code in (200, 404)
@@ -75,4 +74,4 @@ def test_file_url_invalid_file_http():
 
 def test_file_url_missing_filename_http():
     resp = requests.get(f"{BASE_URL}/datasets/openbmb/Ultra-FineWeb/file-url")
-    assert resp.status_code in (404, 422) 
+    assert resp.status_code in (404, 422)

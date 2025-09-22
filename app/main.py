@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 app = FastAPI(title="Collinear API")
 
-# Enable CORS for the frontend
+
 frontend_origin = "http://localhost:5173"
 app.add_middleware(
     CORSMiddleware,

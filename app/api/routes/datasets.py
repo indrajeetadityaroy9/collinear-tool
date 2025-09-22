@@ -58,7 +58,7 @@ async def list_datasets(
     """Return a page of cached datasets with optional search and sorting."""
     result, status = get_datasets_page_from_cache(1_000_000, 0)
     if status != 200:
-        return JSONResponse(result, status_code=status)  # type: ignore[return-value]
+        return JSONResponse(result, status_code=status)
 
     items = result["items"]
     if search:
@@ -125,6 +125,6 @@ async def get_datasets_meta() -> Dict[str, Any]:
 def refresh_cache() -> Dict[str, Any]:
     token = os.environ.get("HUGGINGFACEHUB_API_TOKEN")
     if not token:
-        return JSONResponse({"error": "HUGGINGFACEHUB_API_TOKEN not set"}, status_code=500)  # type: ignore[return-value]
+        return JSONResponse({"error": "HUGGINGFACEHUB_API_TOKEN not set"}, status_code=500)
     cached = fetch_and_cache_all_datasets(token)
     return {"status": "ok", "cached": cached}

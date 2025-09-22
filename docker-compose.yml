@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # Redis for caching and message broker
+
   redis:
     image: redis:7-alpine
     ports:
@@ -14,7 +14,7 @@ services:
       test: ["CMD", "redis-cli", "ping"]
     command: redis-server /usr/local/etc/redis/redis.conf
 
-  # API server
+
   api:
     build:
       context: .
@@ -44,7 +44,7 @@ services:
       retries: 3
       start_period: 40s
 
-  # Celery worker for dataset processing
+
   celery-worker:
     build:
       context: .
@@ -67,7 +67,7 @@ services:
     deploy:
       replicas: 2
 
-  # Celery beat scheduler for periodic tasks
+
   celery-scheduler:
     build:
       context: .
@@ -88,4 +88,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  redis-data: 
+  redis-data:
