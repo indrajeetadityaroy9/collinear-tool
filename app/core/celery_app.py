@@ -40,7 +40,6 @@ celery_app.conf.update(
 # Set up task routes for different task types
 celery_app.conf.task_routes = {
     "app.tasks.dataset_tasks.*": {"queue": "dataset_impacts"},
-    "app.tasks.maintenance.*": {"queue": "maintenance"},
 }
 
 # Configure retry settings
@@ -49,17 +48,9 @@ celery_app.conf.task_max_retries = 3
 
 # Setup beat schedule for periodic tasks if enabled
 celery_app.conf.beat_schedule = {
-    "cleanup-stale-tasks": {
-        "task": "app.tasks.maintenance.cleanup_stale_tasks",
-        "schedule": 3600.0,  # Run every hour
-    },
-    "health-check": {
-        "task": "app.tasks.maintenance.health_check",
-        "schedule": 300.0,  # Run every 5 minutes
-    },
     "refresh-hf-datasets-cache": {
         "task": "app.tasks.dataset_tasks.refresh_hf_datasets_cache",
-        "schedule": 3600.0,  # Run every hour
+        "schedule": 3600.0,
     },
 }
 
