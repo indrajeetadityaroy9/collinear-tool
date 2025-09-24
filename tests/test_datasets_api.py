@@ -47,6 +47,7 @@ def test_cache_status():
     assert "warming_up" in data
     assert "total_items" in data
     assert "last_update" in data
+    assert "refreshing" in data
 
 
 def test_get_commits_valid():

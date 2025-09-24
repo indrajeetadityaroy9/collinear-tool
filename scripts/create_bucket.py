@@ -3,13 +3,10 @@ from supabase import create_client
 from dotenv import load_dotenv
 import httpx
 
-
 load_dotenv()
-
 
 supabase_url = os.environ.get("SUPABASE_URL")
 supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
-
 print(f"URL: {supabase_url}")
 print(f"Key: {supabase_key[:10]}...") if supabase_key else print("No key found")
 
@@ -17,11 +14,8 @@ if not supabase_url or not supabase_key:
     print("Missing Supabase credentials. Make sure SUPABASE_URL and SUPABASE_SERVICE_KEY are set.")
     exit(1)
 
-
 try:
     supabase = create_client(supabase_url, supabase_key)
-
-
     buckets = supabase.storage.list_buckets()
     print(f"Existing buckets: {[b['name'] for b in buckets if 'name' in b]}")
 
@@ -29,7 +23,6 @@ try:
     if not any(bucket.get('name') == 'combined-datasets' for bucket in buckets):
 
         print("Creating combined-datasets bucket...")
-
 
         bucket_url = f"{supabase_url}/storage/v1/bucket"
         headers = {

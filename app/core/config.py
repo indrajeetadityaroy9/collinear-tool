@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Final, Optional
 
 from pydantic import SecretStr, HttpUrl, Field
@@ -11,9 +12,9 @@ class Settings(BaseSettings):
     Reads environment variables and .env file.
     """
 
-    SUPABASE_URL: HttpUrl
-    SUPABASE_SERVICE_KEY: SecretStr
-    SUPABASE_ANON_KEY: SecretStr
+    SUPABASE_URL: Optional[HttpUrl] = None
+    SUPABASE_SERVICE_KEY: Optional[SecretStr] = None
+    SUPABASE_ANON_KEY: Optional[SecretStr] = None
     SUPABASE_JWT_SECRET: Optional[SecretStr] = None
 
 
@@ -43,6 +44,16 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore"
     )
+
+
+    def resolve_hf_token(self, explicit_token: Optional[str] = None) -> Optional[str]:
+        """Return a usable Hugging Face token from explicit value, settings, or env."""
+
+        if explicit_token:
+            return explicit_token
+        if self.HF_API_TOKEN:
+            return self.HF_API_TOKEN.get_secret_value()
+        return os.environ.get("HUGGINGFACEHUB_API_TOKEN")
 
 
 settings = Settings()

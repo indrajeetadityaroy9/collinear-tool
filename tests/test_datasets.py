@@ -38,6 +38,7 @@ def test_cache_status_http():
     assert "warming_up" in data
     assert "total_items" in data
     assert "last_update" in data
+    assert "refreshing" in data
 
 
 def test_commits_valid_http():

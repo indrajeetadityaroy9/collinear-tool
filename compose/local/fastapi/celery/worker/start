@@ -5,10 +5,7 @@ set -o nounset
 
 echo "Starting Celery worker..."
 
-
 python -c "import app.tasks.dataset_tasks; print('Task modules imported and registered successfully.')"
-
-
 
 exec celery -A app.core.celery_app worker \
     --loglevel=${LOG_LEVEL:-INFO} \

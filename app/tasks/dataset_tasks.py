@@ -1,11 +1,11 @@
 """Celery tasks for maintaining the Hugging Face dataset cache."""
 
 import logging
-import os
 
 from celery import shared_task
 
 from app.core.celery_app import get_celery_app
+from app.core.config import settings
 from app.integrations.hf_datasets import (
     fetch_and_cache_all_datasets,
     process_datasets_page,
@@ -47,10 +47,10 @@ def refresh_hf_datasets_full_cache(self):
     """Fetch the entire dataset catalog and cache it as a single blob."""
     logger.info("[refresh_hf_datasets_full_cache] Starting full Hugging Face datasets cache refresh.")
     try:
-        token = os.environ.get("HUGGINGFACEHUB_API_TOKEN")
+        token = settings.resolve_hf_token()
         if not token:
-            logger.error("[refresh_hf_datasets_full_cache] HUGGINGFACEHUB_API_TOKEN not set.")
-            return {"status": "error", "error": "HUGGINGFACEHUB_API_TOKEN not set"}
+            logger.error("[refresh_hf_datasets_full_cache] Hugging Face token not configured.")
+            return {"status": "error", "error": "Hugging Face token not configured"}
         count = fetch_and_cache_all_datasets(token)
         logger.info("[refresh_hf_datasets_full_cache] Cached %s datasets.", count)
         return {"status": "ok", "cached": count}
