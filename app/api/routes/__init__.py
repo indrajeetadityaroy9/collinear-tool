@@ -1,3 +1,1 @@
-"""API route definitions."""
-
-__all__ = ["datasets"]
+__all__ = ['datasets']
