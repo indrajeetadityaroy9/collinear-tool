@@ -4,10 +4,14 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.integrations.hf_datasets import get_dataset_commits_async, get_dataset_files_async, get_datasets_page_from_cache, get_file_url_async
 from app.integrations.redis_client import cache_get
+from app.utils.cache_decorators import cache_response, cache_status_endpoint, invalidate_cache_pattern
+
 router = APIRouter(prefix='/datasets', tags=['datasets'])
 log = logging.getLogger(__name__)
 
+
 @router.get('/cache-status')
+@cache_status_endpoint(ttl=30)
 async def cache_status():
     meta = await cache_get('hf:datasets:meta')
     last_update = meta.get('last_update') if isinstance(meta, dict) else None
@@ -21,8 +25,10 @@ async def cache_status():
         'refreshing': refreshing,
     }
 
+
 @router.get('/')
-async def list_datasets(request: Request):
+@cache_response(ttl=300, key_prefix="api:cache:datasets")
+async def list_datasets(request):
     params = request.query_params
     try:
         limit = int(params.get('limit', 10))
@@ -50,6 +56,7 @@ async def list_datasets(request: Request):
         return JSONResponse(result, status_code=status_code)
     return result
 
+
 @router.get('/{dataset_id:path}/commits')
 async def get_commits(dataset_id):
     try:
@@ -57,6 +64,7 @@ async def get_commits(dataset_id):
     except Exception as exc:
         log.error('Error fetching commits for %s: %s', dataset_id, exc)
         raise HTTPException(status_code=404, detail=f'Could not fetch commits: {exc}') from exc
+
 
 @router.get('/{dataset_id:path}/files')
 async def list_files(dataset_id):
@@ -66,8 +74,9 @@ async def list_files(dataset_id):
         log.error('Error listing files for %s: %s', dataset_id, exc)
         raise HTTPException(status_code=404, detail=f'Could not list files: {exc}') from exc
 
+
 @router.get('/{dataset_id:path}/file-url')
-async def get_file_url_endpoint(dataset_id, request: Request):
+async def get_file_url_endpoint(dataset_id, request):
     filename = request.query_params.get('filename')
     if not filename:
         raise HTTPException(status_code=422, detail='filename is required')
@@ -75,12 +84,27 @@ async def get_file_url_endpoint(dataset_id, request: Request):
     url = await get_file_url_async(dataset_id, filename, revision)
     return {'download_url': url}
 
+
 @router.get('/meta')
 async def get_datasets_meta():
     meta = await cache_get('hf:datasets:meta')
     return meta if isinstance(meta, dict) else {}
 
+
+@router.get('/memory-status')
+async def get_memory_status():
+    from app.middleware.memory_profiler import get_memory_info
+    return get_memory_info()
+
+
+@router.get('/metrics')
+async def get_metrics():
+    from app.metrics.prometheus import metrics_endpoint
+    return await metrics_endpoint()
+
+
 @router.post('/refresh-cache', status_code=status.HTTP_202_ACCEPTED)
+@invalidate_cache_pattern("api:cache:*")
 async def refresh_cache():
     token = settings.resolve_hf_token()
     if not token:
