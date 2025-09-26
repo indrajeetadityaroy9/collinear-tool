@@ -1,7 +1,3 @@
-"""Utilities for interacting with Hugging Face datasets and caching metadata in Redis."""
-
-from __future__ import annotations
-
 import asyncio
 import base64
 import gzip
@@ -32,7 +28,7 @@ REDIS_META_KEY = "hf:datasets:meta"
 class EnhancedJSONEncoder(json.JSONEncoder):
     """JSON encoder that understands datetime objects."""
 
-    def default(self, obj: Any):  # type: ignore[override]
+    def default(self, obj: Any): 
         if isinstance(obj, datetime):
             return obj.isoformat()
         return super().default(obj)
@@ -48,7 +44,7 @@ def _resolve_hf_token(explicit_token: Optional[str] = None) -> str:
 def _safe_get_redis() -> Optional[Redis]:
     try:
         return get_redis_sync()
-    except Exception as exc:  # pragma: no cover - logged for observability
+    except Exception as exc: 
         log.warning("Redis unavailable: %s", exc)
         return None
 

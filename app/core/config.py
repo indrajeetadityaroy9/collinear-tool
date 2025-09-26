@@ -1,18 +1,9 @@
-from __future__ import annotations
-
 import os
 from typing import Final, Optional
-
 from pydantic import SecretStr, HttpUrl, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 class Settings(BaseSettings):
-    """
-    Core application settings.
-    Reads environment variables and .env file.
-    """
-
     SUPABASE_URL: Optional[HttpUrl] = None
     SUPABASE_SERVICE_KEY: Optional[SecretStr] = None
     SUPABASE_ANON_KEY: Optional[SecretStr] = None

@@ -1,12 +1,8 @@
-"""Celery configuration for task processing."""
-
 import importlib
 import logging
 from celery import Celery
 from celery.signals import task_failure, task_success, worker_ready, worker_shutdown
-
 from app.core.config import settings
-
 
 logger = logging.getLogger(__name__)
 

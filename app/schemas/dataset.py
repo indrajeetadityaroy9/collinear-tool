@@ -2,15 +2,11 @@ import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from pydantic import BaseModel, Field
-
 from app.schemas.dataset_common import ImpactLevel, DatasetMetrics
-
 
 log = logging.getLogger(__name__)
 
-
 SUPPORTED_STRATEGIES = ["merge", "intersect", "filter"]
-
 
 class ImpactAssessment(BaseModel):
     dataset_id: str = Field(..., description="The ID of the dataset being assessed")

@@ -1,5 +1,3 @@
-"""Redis client for caching and task queue management."""
-
 import json
 from typing import Any, Dict, Optional, TypeVar
 from datetime import datetime
