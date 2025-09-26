@@ -4,6 +4,7 @@ import logging
 from functools import wraps
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
+from app.integrations.redis_client import cache_invalidate_pattern
 from app.integrations.redis_client import cache_get, cache_set
 
 log = logging.getLogger(__name__)
@@ -97,7 +98,6 @@ def invalidate_cache_pattern(pattern):
         @wraps(func)
         async def wrapper(*args, **kwargs):
             result = await func(*args, **kwargs)
-            from app.integrations.redis_client import cache_invalidate_pattern
             try:
                 count = await cache_invalidate_pattern(pattern)
                 log.info(f"Invalidated {count} cache entries matching pattern: {pattern}")

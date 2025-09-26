@@ -1,9 +1,7 @@
 #!/bin/bash
-
 set -o errexit
 set -o pipefail
 set -o nounset
-
 
 redis_ready() {
     redis-cli -h redis -p 6379 ping | grep PONG
@@ -15,6 +13,5 @@ until redis_ready; do
   sleep 1
 done
 >&2 echo 'Redis is up - continuing...'
-
 
 exec "$@"

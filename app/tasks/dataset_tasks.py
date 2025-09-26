@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from celery import shared_task
 from app.core.celery_app import get_celery_app
 from app.core.config import settings
@@ -13,7 +14,6 @@ celery_app = get_celery_app()
 def refresh_hf_datasets_cache():
     logger.info('Starting refresh of HuggingFace datasets cache via Celery task.')
     try:
-        import asyncio
         asyncio.run(refresh_datasets_cache())
         logger.info('Successfully refreshed HuggingFace datasets cache.')
         return {'status': 'success'}
@@ -26,7 +26,6 @@ def refresh_hf_datasets_cache():
 def fetch_datasets_page(self, offset, limit):
     logger.info('[fetch_datasets_page] ENTRY: offset=%s, limit=%s', offset, limit)
     try:
-        import asyncio
         result = asyncio.run(process_datasets_page(offset, limit))
         logger.info('[fetch_datasets_page] SUCCESS: offset=%s, limit=%s, result=%s', offset, limit, result)
         return result

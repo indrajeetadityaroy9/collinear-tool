@@ -1,27 +1,55 @@
 # Collinear Data Tool API
 
-A FastAPI service that catalogs Hugging Face datasets, classifies their impact, and exposes the metadata to clients through a REST API. A Redis-backed cache keeps responses fast while Celery workers keep the catalog synchronized with the Hugging Face Hub.
+A FastAPI service that catalogs Hugging Face datasets, adds impact assessments, and provides a searchable REST API for dataset discovery. Built with Redis caching, Celery background processing, and comprehensive monitoring capabilities.
 
-## What the service does
-- **Dataset catalog:** Fetches the full Hugging Face dataset registry, annotates each dataset with size, download, like metrics, and derives an impact level (low/medium/high/not available).
-- **Searchable API:** Provides `/api/datasets` endpoints for paginated listing, free-text search, and basic sorting. Clients can also fetch commit history, file listings, and download URLs for individual datasets.
-- **Operational telemetry:** Returns cache metadata (last refresh, total items, warming/refreshing flags) so the frontend can display loading states.
+## Core Features
 
-## Redis integration
-Redis is the primary persistence layer for the dataset cache and job coordination:
-- A **sorted set** stores dataset IDs with stable ordering for pagination.
-- A **hash** holds the enriched dataset documents that the API serves.
-- A **stream** captures incremental updates, paving the way for downstream consumers.
-- A **base64-encoded gzip blob** mirrors the full catalog for quick bulk reads.
-- A dedicated **meta key** records `last_update`, `total_items`, and whether a refresh is in progress; the `/api/datasets/cache-status` endpoint reads from here.
+### **Dataset Catalog Management**
+- Fetches complete Hugging Face dataset registry (hundreds of thousands of datasets)
+- Enriches datasets with impact assessments based on size, downloads, and likes
+- Classifies datasets as high/medium/low/not_available impact with detailed metrics
+- Provides paginated, searchable, sortable access to the entire catalog
 
-The FastAPI layer uses these structures to serve real-time responses without recomputing dataset metadata. If the cache is empty (e.g., on cold start) the API surfaces a `warming_up` flag so clients can handle empty states.
+### **Search & Discovery**
+- **Text Search**: Fast HSCAN-based search across dataset IDs, names, and descriptions
+- **Multi-field Sorting**: Efficient sorting by downloads, likes, size with pre-computed indexes
+- **Pagination**: Stable ordering with offset/limit support
+- **Combined Operations**: Search + sort + pagination in unified queries
 
-## Celery workflow
-Celery workers handle long-running synchronization with Hugging Face:
-- `refresh_hf_datasets_full_cache`: Fetches the entire dataset list, repopulates all Redis structures, and updates the metadata key. The `/api/datasets/refresh-cache` endpoint queues this task asynchronously so the API thread stays responsive.
-- `fetch_datasets_page`: Processes a page of datasets, enriching and inserting them into Redis one page at a time. The periodic beat schedule enqueues this task in bulk to keep the cache fresh without downloading the entire catalog every cycle.
-- `refresh_hf_datasets_cache_task`: Orchestrates the page-wise refresh by inspecting the total dataset count and dispatching a batch of `fetch_datasets_page` jobs.
+### **Dataset Metadata Services**
+- **Commit History**: Version tracking for dataset updates
+- **File Listings**: Complete file inventories for each dataset
+- **Download URLs**: Secure, direct download links for dataset files
+- **Real-time Metadata**: Live integration with Hugging Face Hub API
 
-Celery connects to the same Redis instance for both the broker and result backend, ensuring task status and cached data share the same infrastructure. Worker logging records successes/failures so operators can monitor refresh health.
+### **Caching**
+Redis powers a multi-layer caching system:
+- **Sorted Sets** (`hf:datasets:all:zset`): Stable pagination ordering
+- **Hash Storage** (`hf:datasets:all:hash`): Enriched dataset documents
+- **Sort Indexes** (`:by_downloads`, `:by_likes`, `:by_size_bytes`): Pre-computed sorting
+- **Metadata Cache** (`hf:datasets:meta`): Cache status and statistics
+- **4GB Memory Pool**: Optimized for dataset cataloging workload
+
+### **Background Processing**
+Celery workers handle intensive operations asynchronously:
+- **Full Cache Refresh** (`refresh_hf_datasets_full_cache`): Complete dataset synchronization
+- **Batch Processing** (`fetch_datasets_page`): Efficient page-wise updates
+- **Scheduled Sync**: Automatic hourly cache refreshes
+- **Task Deduplication**: Prevents overlapping refresh operations
+- **Progress Tracking**: Real-time monitoring of long-running tasks
+
+### **Monitoring**
+Observability with Prometheus integration:
+- **HTTP Metrics**: Request/response tracking with status codes
+- **Redis Operations**: Cache hit/miss ratios and operation timing
+- **Memory Profiling**: Automatic garbage collection and memory limits
+- **Celery Monitoring**: Task duration, retries, and failure tracking
+- **Custom Metrics**: Dataset processing performance and cache efficiency
+
+### **Impact Assessment**
+Automated classification system with configurable thresholds:
+- **Size-based**: 100MB (low) / 1GB (medium) / 10GB (high) thresholds
+- **Popularity-based**: Download and like count analysis
+- **Metadata Enrichment**: Detailed assessment reports with metrics and methods
+- **Real-time Calculation**: Dynamic impact scoring during cache population
 
