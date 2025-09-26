@@ -35,21 +35,36 @@ def fetch_datasets_page(self, offset: int, limit: int):
     logger.info("[fetch_datasets_page] ENTRY: offset=%s, limit=%s", offset, limit)
     try:
         result = process_datasets_page(offset, limit)
-        logger.info("[fetch_datasets_page] SUCCESS: offset=%s, limit=%s, result=%s", offset, limit, result)
+        logger.info(
+            "[fetch_datasets_page] SUCCESS: offset=%s, limit=%s, result=%s",
+            offset,
+            limit,
+            result,
+        )
         return result
     except Exception as exc:
-        logger.error("[fetch_datasets_page] ERROR: offset=%s, limit=%s, exc=%s", offset, limit, exc, exc_info=True)
+        logger.error(
+            "[fetch_datasets_page] ERROR: offset=%s, limit=%s, exc=%s",
+            offset,
+            limit,
+            exc,
+            exc_info=True,
+        )
         raise self.retry(exc=exc)
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def refresh_hf_datasets_full_cache(self):
     """Fetch the entire dataset catalog and cache it as a single blob."""
-    logger.info("[refresh_hf_datasets_full_cache] Starting full Hugging Face datasets cache refresh.")
+    logger.info(
+        "[refresh_hf_datasets_full_cache] Starting full Hugging Face datasets cache refresh."
+    )
     try:
         token = settings.resolve_hf_token()
         if not token:
-            logger.error("[refresh_hf_datasets_full_cache] Hugging Face token not configured.")
+            logger.error(
+                "[refresh_hf_datasets_full_cache] Hugging Face token not configured."
+            )
             return {"status": "error", "error": "Hugging Face token not configured"}
         count = fetch_and_cache_all_datasets(token)
         logger.info("[refresh_hf_datasets_full_cache] Cached %s datasets.", count)

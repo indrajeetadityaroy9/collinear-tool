@@ -65,7 +65,9 @@ def _stringify_for_stream(item: Dict[str, Any]) -> Dict[str, str]:
     return payload
 
 
-def _update_cache_meta(redis_client: Redis, total_items: int, *, refreshing: bool) -> None:
+def _update_cache_meta(
+    redis_client: Redis, total_items: int, *, refreshing: bool
+) -> None:
     meta = {
         "last_update": datetime.now(timezone.utc).isoformat(),
         "total_items": total_items,
@@ -106,8 +108,7 @@ def _load_all_cached_items(redis_client: Redis) -> List[Dict[str, Any]]:
     raw_items = redis_client.hgetall(REDIS_HASH_KEY)
     if raw_items:
         return [
-            _normalize_cached_item(json.loads(value))
-            for value in raw_items.values()
+            _normalize_cached_item(json.loads(value)) for value in raw_items.values()
         ]
 
     compressed = redis_client.get(REDIS_BLOB_KEY)
@@ -124,7 +125,9 @@ def _load_all_cached_items(redis_client: Redis) -> List[Dict[str, Any]]:
     return []
 
 
-def determine_impact_level_by_criteria(size_bytes, downloads=None, likes=None) -> Tuple[str, str]:
+def determine_impact_level_by_criteria(
+    size_bytes, downloads=None, likes=None
+) -> Tuple[str, str]:
     """Classify dataset impact based on size, downloads, or likes."""
     try:
         size = int(size_bytes) if size_bytes not in (None, "null") else 0
@@ -165,34 +168,51 @@ def determine_impact_level_by_criteria(size_bytes, downloads=None, likes=None) -
     return "not_available", "size_and_downloads_and_likes_unknown"
 
 
-async def _fetch_size(session: httpx.AsyncClient, dataset_id: str, token: Optional[str] = None) -> Optional[int]:
+async def _fetch_size(
+    session: httpx.AsyncClient, dataset_id: str, token: Optional[str] = None
+) -> Optional[int]:
     url = f"https://datasets-server.huggingface.co/size?dataset={dataset_id}"
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
         resp = await session.get(url, headers=headers, timeout=30)
         if resp.status_code == 200:
             data = resp.json()
-            return data.get("size", {}).get("dataset", {}).get("num_bytes_original_files")
+            return (
+                data.get("size", {}).get("dataset", {}).get("num_bytes_original_files")
+            )
     except Exception as exc:
         log.warning("Could not fetch size for %s: %s", dataset_id, exc)
     return None
 
 
-async def _fetch_sizes(dataset_ids: Iterable[str], token: Optional[str] = None) -> Dict[str, Optional[int]]:
+async def _fetch_sizes(
+    dataset_ids: Iterable[str], token: Optional[str] = None
+) -> Dict[str, Optional[int]]:
     results: Dict[str, Optional[int]] = {}
     dataset_ids = [dataset_id for dataset_id in dataset_ids if dataset_id]
     if not dataset_ids:
         return results
 
     async with httpx.AsyncClient() as session:
-        tasks = [asyncio.create_task(_fetch_size(session, ds_id, token)) for ds_id in dataset_ids]
+        tasks = [
+            asyncio.create_task(_fetch_size(session, ds_id, token))
+            for ds_id in dataset_ids
+        ]
         for dataset_id, task in zip(dataset_ids, tasks):
             results[dataset_id] = await task
     return results
 
 
-def _build_cached_item(dataset_id: str, raw: Dict[str, Any], size_bytes: Optional[int], downloads: Optional[int], likes: Optional[int]) -> Dict[str, Any]:
-    impact_level, assessment_method = determine_impact_level_by_criteria(size_bytes, downloads, likes)
+def _build_cached_item(
+    dataset_id: str,
+    raw: Dict[str, Any],
+    size_bytes: Optional[int],
+    downloads: Optional[int],
+    likes: Optional[int],
+) -> Dict[str, Any]:
+    impact_level, assessment_method = determine_impact_level_by_criteria(
+        size_bytes, downloads, likes
+    )
     metrics = DatasetMetrics(size_bytes=size_bytes, downloads=downloads, likes=likes)
     thresholds = {
         "size_bytes": {
@@ -223,7 +243,10 @@ def _build_cached_item(dataset_id: str, raw: Dict[str, Any], size_bytes: Optiona
         "impact_assessment": impact_assessment,
     }
 
-    for key, value in raw.items():  # include additional metadata for clients that expect it
+    for (
+        key,
+        value,
+    ) in raw.items():  # include additional metadata for clients that expect it
         item.setdefault(key, value)
 
     return item
@@ -243,14 +266,22 @@ def process_datasets_page(offset: int, limit: int) -> int:
     response = requests.get(HF_API_URL, headers=headers, params=params, timeout=120)
     response.raise_for_status()
     page_items = response.json()
-    log.info("[process_datasets_page] Received %s datasets at offset %s", len(page_items), offset)
+    log.info(
+        "[process_datasets_page] Received %s datasets at offset %s",
+        len(page_items),
+        offset,
+    )
 
     dataset_ids = [item.get("id") for item in page_items]
-    size_map = asyncio.run(_fetch_sizes(dataset_ids, token=token)) if dataset_ids else {}
+    size_map = (
+        asyncio.run(_fetch_sizes(dataset_ids, token=token)) if dataset_ids else {}
+    )
 
     redis_client = _safe_get_redis()
     if redis_client is None:
-        raise RuntimeError("Redis connection unavailable while processing datasets page")
+        raise RuntimeError(
+            "Redis connection unavailable while processing datasets page"
+        )
 
     pipe = redis_client.pipeline()
     stored = 0
@@ -261,10 +292,14 @@ def process_datasets_page(offset: int, limit: int) -> int:
         size_bytes = size_map.get(dataset_id)
         downloads = dataset.get("downloads")
         likes = dataset.get("likes")
-        cached_item = _build_cached_item(dataset_id, dataset, size_bytes, downloads, likes)
+        cached_item = _build_cached_item(
+            dataset_id, dataset, size_bytes, downloads, likes
+        )
         pipe.xadd(REDIS_STREAM_KEY, _stringify_for_stream(cached_item))
         pipe.zadd(REDIS_ZSET_KEY, {dataset_id: offset + index})
-        pipe.hset(REDIS_HASH_KEY, dataset_id, json.dumps(cached_item, cls=EnhancedJSONEncoder))
+        pipe.hset(
+            REDIS_HASH_KEY, dataset_id, json.dumps(cached_item, cls=EnhancedJSONEncoder)
+        )
         stored += 1
 
     pipe.execute()
@@ -272,15 +307,21 @@ def process_datasets_page(offset: int, limit: int) -> int:
     _update_cache_meta(redis_client, total_items, refreshing=False)
 
     if stored:
-        redis_client.delete(REDIS_BLOB_KEY)  # mark bulk snapshot stale until next full refresh
+        redis_client.delete(
+            REDIS_BLOB_KEY
+        )  # mark bulk snapshot stale until next full refresh
 
-    log.info("[process_datasets_page] EXIT: Cached %s datasets at offset %s", stored, offset)
+    log.info(
+        "[process_datasets_page] EXIT: Cached %s datasets at offset %s", stored, offset
+    )
     return stored
 
 
 def refresh_datasets_cache() -> None:
     """Schedule Celery tasks to refresh cached dataset metadata."""
-    log.info("[refresh_datasets_cache] Orchestrating dataset fetch tasks using direct HF API calls.")
+    log.info(
+        "[refresh_datasets_cache] Orchestrating dataset fetch tasks using direct HF API calls."
+    )
     token = _resolve_hf_token()
 
     headers = {
@@ -288,12 +329,16 @@ def refresh_datasets_cache() -> None:
         "User-Agent": "Mozilla/5.0 (compatible; CollinearTool/1.0; +https://yourdomain.com)",
     }
 
-    response = requests.get(HF_API_URL, headers=headers, params={"limit": 1, "offset": 0}, timeout=120)
+    response = requests.get(
+        HF_API_URL, headers=headers, params={"limit": 1, "offset": 0}, timeout=120
+    )
     response.raise_for_status()
 
     total_str = response.headers.get("X-Total-Count")
     if not total_str:
-        raise ValueError("'X-Total-Count' header missing from Hugging Face API response.")
+        raise ValueError(
+            "'X-Total-Count' header missing from Hugging Face API response."
+        )
 
     total = int(total_str)
     limit = 500
@@ -316,13 +361,22 @@ def refresh_datasets_cache() -> None:
 async def get_dataset_commits_async(dataset_id: str, limit: int = 20):
     """Return commit history for a dataset via the Hugging Face Hub SDK."""
     api = HfApi()
-    log.info("[get_dataset_commits_async] Fetching commits for dataset_id=%s", dataset_id)
+    log.info(
+        "[get_dataset_commits_async] Fetching commits for dataset_id=%s", dataset_id
+    )
     try:
         import anyio
 
-        commits = await anyio.to_thread.run_sync(api.list_repo_commits, repo_id=dataset_id, repo_type="dataset")
+        commits = await anyio.to_thread.run_sync(
+            api.list_repo_commits, repo_id=dataset_id, repo_type="dataset"
+        )
     except Exception as exc:
-        log.error("[get_dataset_commits_async] Error fetching commits for %s: %s", dataset_id, exc, exc_info=True)
+        log.error(
+            "[get_dataset_commits_async] Error fetching commits for %s: %s",
+            dataset_id,
+            exc,
+            exc_info=True,
+        )
         raise
 
     result = []
@@ -334,7 +388,11 @@ async def get_dataset_commits_async(dataset_id: str, limit: int = 20):
             authors = getattr(commit, "authors", [])
             author_name = authors[0] if authors and isinstance(authors, list) else ""
             created_at = getattr(commit, "created_at", None)
-            date = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at or "")
+            date = (
+                created_at.isoformat()
+                if hasattr(created_at, "isoformat")
+                else str(created_at or "")
+            )
             result.append(
                 {
                     "id": commit_id or "",
@@ -345,7 +403,11 @@ async def get_dataset_commits_async(dataset_id: str, limit: int = 20):
                 }
             )
         except Exception as exc:
-            log.error("[get_dataset_commits_async] Error parsing commit: %s", exc, exc_info=True)
+            log.error(
+                "[get_dataset_commits_async] Error parsing commit: %s",
+                exc,
+                exc_info=True,
+            )
     return result
 
 
@@ -354,10 +416,14 @@ async def get_dataset_files_async(dataset_id: str) -> List[str]:
     api = HfApi()
     import anyio
 
-    return await anyio.to_thread.run_sync(api.list_repo_files, repo_id=dataset_id, repo_type="dataset")
+    return await anyio.to_thread.run_sync(
+        api.list_repo_files, repo_id=dataset_id, repo_type="dataset"
+    )
 
 
-async def get_file_url_async(dataset_id: str, filename: str, revision: Optional[str] = None) -> str:
+async def get_file_url_async(
+    dataset_id: str, filename: str, revision: Optional[str] = None
+) -> str:
     """Return a download URL for a dataset file."""
     from huggingface_hub import hf_hub_url
     import anyio
@@ -386,7 +452,7 @@ async def fetch_all_sizes(dataset_ids, token=None, batch_size=50):
             batch = dataset_ids[i : i + batch_size]
             tasks = [fetch_size(session, ds_id, token) for ds_id in batch]
             batch_results = await asyncio.gather(*tasks)
-            for ds_id, size in batch_results:
+            for ds_id, size in zip(batch, batch_results):
                 results[ds_id] = size
     return results
 
@@ -397,7 +463,11 @@ def fetch_and_cache_all_datasets(token: Optional[str] = None):
     log.info("Fetching all datasets from Hugging Face Hub...")
     all_datasets = list(api.list_datasets())
     dataset_ids = [dataset.id for dataset in all_datasets]
-    sizes = asyncio.run(fetch_all_sizes(dataset_ids, token=resolved_token, batch_size=50)) if dataset_ids else {}
+    sizes = (
+        asyncio.run(fetch_all_sizes(dataset_ids, token=resolved_token, batch_size=50))
+        if dataset_ids
+        else {}
+    )
 
     redis_client = _safe_get_redis()
     if redis_client is None:
@@ -413,13 +483,21 @@ def fetch_and_cache_all_datasets(token: Optional[str] = None):
         size_bytes = sizes.get(dataset_id)
         downloads = raw_data.get("downloads")
         likes = raw_data.get("likes")
-        cached_item = _build_cached_item(dataset_id, raw_data, size_bytes, downloads, likes)
+        cached_item = _build_cached_item(
+            dataset_id, raw_data, size_bytes, downloads, likes
+        )
         payload.append(cached_item)
         pipe.xadd(REDIS_STREAM_KEY, _stringify_for_stream(cached_item))
         pipe.zadd(REDIS_ZSET_KEY, {dataset_id: index})
-        pipe.hset(REDIS_HASH_KEY, dataset_id, json.dumps(cached_item, cls=EnhancedJSONEncoder))
+        pipe.hset(
+            REDIS_HASH_KEY, dataset_id, json.dumps(cached_item, cls=EnhancedJSONEncoder)
+        )
 
-    compressed = gzip.compress(json.dumps(payload, cls=EnhancedJSONEncoder).encode("utf-8")) if payload else b""
+    compressed = (
+        gzip.compress(json.dumps(payload, cls=EnhancedJSONEncoder).encode("utf-8"))
+        if payload
+        else b""
+    )
     if compressed:
         encoded = base64.b64encode(compressed).decode("ascii")
         pipe.set(REDIS_BLOB_KEY, encoded)
@@ -445,7 +523,9 @@ def _sort_value(value: Any) -> Tuple[int, Any]:
     return (2, str(value).lower())
 
 
-def _build_paginated_response(items: List[Dict[str, Any]], total: int, limit: int, offset: int) -> Dict[str, Any]:
+def _build_paginated_response(
+    items: List[Dict[str, Any]], total: int, limit: int, offset: int
+) -> Dict[str, Any]:
     if total == 0:
         return {
             "total": 0,
@@ -512,11 +592,18 @@ def get_datasets_page_from_cache(
             items = [
                 item
                 for item in items
-                if lowered in ((item.get("id") or "").lower() + " " + str(item.get("description") or "").lower())
+                if lowered
+                in (
+                    (item.get("id") or "").lower()
+                    + " "
+                    + str(item.get("description") or "").lower()
+                )
             ]
         if sort_by:
             reverse = sort_order != "asc"
-            items.sort(key=lambda dataset: _sort_value(dataset.get(sort_by)), reverse=reverse)
+            items.sort(
+                key=lambda dataset: _sort_value(dataset.get(sort_by)), reverse=reverse
+            )
         total_filtered = len(items)
         response = _build_paginated_response(items, total_filtered, limit, offset)
         response["warming_up"] = False
@@ -526,9 +613,7 @@ def get_datasets_page_from_cache(
     if ids:
         raw_items = redis_client.hmget(REDIS_HASH_KEY, ids)
         page_items = [
-            _normalize_cached_item(json.loads(item))
-            for item in raw_items
-            if item
+            _normalize_cached_item(json.loads(item)) for item in raw_items if item
         ]
     else:
         page_items = []

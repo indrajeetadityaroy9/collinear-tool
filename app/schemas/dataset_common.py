@@ -12,6 +12,8 @@ class ImpactLevel(str, Enum):
 
 class DatasetMetrics(BaseModel):
     size_bytes: Optional[int] = Field(None, description="Size of the dataset in bytes")
-    file_count: Optional[int] = Field(None, description="Number of files in the dataset")
+    file_count: Optional[int] = Field(
+        None, description="Number of files in the dataset"
+    )
     downloads: Optional[int] = Field(None, description="Number of downloads (all time)")
     likes: Optional[int] = Field(None, description="Number of likes")

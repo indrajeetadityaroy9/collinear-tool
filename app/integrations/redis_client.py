@@ -13,18 +13,15 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 
-
-T = TypeVar('T')
-
+T = TypeVar("T")
 
 log = logging.getLogger(__name__)
-
 
 _redis_pool_async = None
 _redis_pool_sync = None
 
-
 DEFAULT_CACHE_EXPIRY = 60 * 60 * 12
+
 
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=1, max=10))
 async def get_redis_pool() -> redis_async.Redis:
@@ -32,11 +29,9 @@ async def get_redis_pool() -> redis_async.Redis:
     global _redis_pool_async
 
     if _redis_pool_async is None:
-
         redis_url = settings.REDIS_URL or "redis://localhost:6379/0"
 
         try:
-
             _redis_pool_async = redis_async.ConnectionPool.from_url(
                 redis_url,
                 max_connections=10,
@@ -44,7 +39,7 @@ async def get_redis_pool() -> redis_async.Redis:
                 health_check_interval=5,
                 socket_connect_timeout=5,
                 socket_keepalive=True,
-                retry_on_timeout=True
+                retry_on_timeout=True,
             )
             log.info(f"Created async Redis connection pool with URL: {redis_url}")
         except Exception as e:
@@ -53,23 +48,22 @@ async def get_redis_pool() -> redis_async.Redis:
 
     return redis_async.Redis(connection_pool=_redis_pool_async)
 
+
 def get_redis_pool_sync() -> redis_sync.Redis:
     """Get or create synchronous Redis connection pool."""
     global _redis_pool_sync
 
     if _redis_pool_sync is None:
-
         redis_url = settings.REDIS_URL or "redis://localhost:6379/0"
 
         try:
-
             _redis_pool_sync = redis_sync.ConnectionPool.from_url(
                 redis_url,
                 max_connections=10,
                 decode_responses=True,
                 socket_connect_timeout=5,
                 socket_keepalive=True,
-                retry_on_timeout=True
+                retry_on_timeout=True,
             )
             log.info(f"Created sync Redis connection pool with URL: {redis_url}")
         except Exception as e:
@@ -77,6 +71,7 @@ def get_redis_pool_sync() -> redis_sync.Redis:
             raise
 
     return redis_sync.Redis(connection_pool=_redis_pool_sync)
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=5))
 async def get_redis() -> redis_async.Redis:
@@ -87,6 +82,7 @@ async def get_redis() -> redis_async.Redis:
     except Exception as e:
         log.error(f"Error getting Redis client: {e}")
         raise
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=5))
 def get_redis_sync() -> redis_sync.Redis:
@@ -106,6 +102,7 @@ def generate_cache_key(prefix: str, *args: Any) -> str:
 
 def _json_serialize(obj: Any) -> str:
     """Serialize object to JSON with datetime support."""
+
     def _serialize_datetime(o: Any) -> str:
         if isinstance(o, datetime):
             return o.isoformat()
@@ -114,6 +111,7 @@ def _json_serialize(obj: Any) -> str:
         return str(o)
 
     return json.dumps(obj, default=_serialize_datetime)
+
 
 def _json_deserialize(data: str, model_class: Optional[type] = None) -> Any:
     """Deserialize JSON string to object with datetime support."""
@@ -137,6 +135,7 @@ async def cache_set(key: str, value: Any, expire: int = DEFAULT_CACHE_EXPIRY) ->
     except Exception as e:
         log.error(f"Error caching data at key {key}: {e}")
         return False
+
 
 async def cache_get(key: str, model_class: Optional[type] = None) -> Optional[Any]:
     """Get cache value with optional model deserialization (async version)."""
@@ -170,6 +169,7 @@ def sync_cache_set(key: str, value: Any, expire: int = DEFAULT_CACHE_EXPIRY) -> 
         log.error(f"Error caching data at key {key}: {e}")
         return False
 
+
 def sync_cache_get(key: str, model_class: Optional[type] = None) -> Optional[Any]:
     """Get cache value with optional model deserialization (synchronous version for Celery tasks). Logs slow operations."""
     redis_client = get_redis_sync()
@@ -187,6 +187,7 @@ def sync_cache_get(key: str, model_class: Optional[type] = None) -> Optional[Any
         log.error(f"Error retrieving cache for key {key}: {e}")
         return None
 
+
 async def cache_invalidate(key: str) -> bool:
     """Invalidate cache for key."""
     redis_client = await get_redis()
@@ -198,6 +199,7 @@ async def cache_invalidate(key: str) -> bool:
     except Exception as e:
         log.error(f"Error invalidating cache for key {key}: {e}")
         return False
+
 
 async def cache_invalidate_pattern(pattern: str) -> int:
     """Invalidate all cache keys matching pattern."""
@@ -230,19 +232,18 @@ async def enqueue_task(queue_name: str, task_id: str, payload: Dict[str, Any]) -
         log.error(f"Error enqueueing task {task_id} to {queue_name}: {e}")
         return False
 
-async def mark_task_complete(queue_name: str, task_id: str, result: Optional[Dict[str, Any]] = None) -> bool:
+
+async def mark_task_complete(
+    queue_name: str, task_id: str, result: Optional[Dict[str, Any]] = None
+) -> bool:
     """Mark task as complete with optional result."""
     redis_client = await get_redis()
 
     try:
-
         if result:
             await redis_client.hset(
-                f"results:{queue_name}",
-                task_id,
-                _json_serialize(result)
+                f"results:{queue_name}", task_id, _json_serialize(result)
             )
-
 
         await redis_client.hset(f"tasks:{queue_name}", task_id, "complete")
         await redis_client.expire(f"tasks:{queue_name}", 86400)
@@ -252,6 +253,7 @@ async def mark_task_complete(queue_name: str, task_id: str, result: Optional[Dic
     except Exception as e:
         log.error(f"Error marking task {task_id} as complete: {e}")
         return False
+
 
 async def get_task_status(queue_name: str, task_id: str) -> Optional[str]:
     """Get status of a task."""
@@ -263,6 +265,7 @@ async def get_task_status(queue_name: str, task_id: str) -> Optional[str]:
     except Exception as e:
         log.error(f"Error getting status for task {task_id}: {e}")
         return None
+
 
 async def get_task_result(queue_name: str, task_id: str) -> Optional[Dict[str, Any]]:
     """Get result of a completed task."""
@@ -284,15 +287,10 @@ async def add_to_stream(stream: str, data: Dict[str, Any], max_len: int = 1000) 
     redis_client = await get_redis()
 
     try:
-
         entry = {k: _json_serialize(v) for k, v in data.items()}
 
-
         event_id = await redis_client.xadd(
-            stream,
-            entry,
-            maxlen=max_len,
-            approximate=True
+            stream, entry, maxlen=max_len, approximate=True
         )
 
         log.debug(f"Added event {event_id} to stream {stream}")

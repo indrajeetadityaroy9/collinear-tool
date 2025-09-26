@@ -61,29 +61,34 @@ def task_failure_handler(sender=None, task_id=None, exception=None, **kwargs):
     """Log failed tasks."""
     logger.error(f"Task {task_id} {sender.name} failed: {exception}")
 
+
 @task_success.connect
 def task_success_handler(sender=None, result=None, **kwargs):
     """Log successful tasks."""
     task_name = sender.name if sender else "Unknown"
     logger.info(f"Task {task_name} completed successfully")
 
+
 @worker_ready.connect
 def worker_ready_handler(**kwargs):
     """Log when worker is ready."""
     logger.info(f"Celery worker ready: {kwargs.get('hostname')}")
+
 
 @worker_shutdown.connect
 def worker_shutdown_handler(**kwargs):
     """Log when worker is shutting down."""
     logger.info(f"Celery worker shutting down: {kwargs.get('hostname')}")
 
+
 def get_celery_app():
     """Get the Celery app instance."""
 
     try:
-
         importlib.import_module("app.tasks")
-        logger.info(f"Tasks successfully imported; registered {len(celery_app.tasks)} tasks")
+        logger.info(
+            f"Tasks successfully imported; registered {len(celery_app.tasks)} tasks"
+        )
     except ImportError as e:
         logger.error(f"Error importing tasks: {e}")
 
