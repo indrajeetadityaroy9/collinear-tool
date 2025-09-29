@@ -1,14 +1,5 @@
 __pycache__/
 *.pyc
-
-
 .pytest_cache/
-
-
 perf_results_*.json
-
-
 celerybeat-schedule
-
-# Claude Code documentation (auto-generated)
-CLAUDE.md
