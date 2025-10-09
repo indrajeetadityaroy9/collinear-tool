@@ -2,8 +2,6 @@
 
 A FastAPI service that implements a Hugging Face datasets registry and provides dataset impact assessment, and exposes the catalog through a searchable, paginated REST API. Redis keeps the catalog warm for millisecond lookups, Celery orchestrates long-running synchronization jobs, and Prometheus-compatible metrics provide insight into performance and reliability.
 
-## Architecture at a Glance
-
 | Component | Role |
 | --- | --- |
 | FastAPI (`app/main.py`) | Serves REST endpoints, boots cache warm-up and exposes operational endpoints. |
@@ -20,7 +18,7 @@ A FastAPI service that implements a Hugging Face datasets registry and provides 
 - **Metadata Services** – On-demand commit history, file inventories, and pre-signed download URLs surfaced through API endpoints.
 - **Operational Visibility** – Cache status, memory snapshots, and Prometheus metrics available without leaving the API surface.
 
-## API Surface
+## API
 
 | Method & Path | Description |
 | --- | --- |
