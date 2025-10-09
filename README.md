@@ -1,55 +1,36 @@
-# Collinear Data Tool API
+# Data Tool API
 
-A FastAPI service that catalogs Hugging Face datasets, adds impact assessments, and provides a searchable REST API for dataset discovery. Built with Redis caching, Celery background processing, and comprehensive monitoring capabilities.
+A FastAPI service that implements a Hugging Face datasets registry and provides dataset impact assessment, and exposes the catalog through a searchable, paginated REST API. Redis keeps the catalog warm for millisecond lookups, Celery orchestrates long-running synchronization jobs, and Prometheus-compatible metrics provide insight into performance and reliability.
 
-## Core Features
+## Architecture at a Glance
 
-### **Dataset Catalog Management**
-- Fetches complete Hugging Face dataset registry (hundreds of thousands of datasets)
-- Enriches datasets with impact assessments based on size, downloads, and likes
-- Classifies datasets as high/medium/low/not_available impact with detailed metrics
-- Provides paginated, searchable, sortable access to the entire catalog
+| Component | Role |
+| --- | --- |
+| FastAPI (`app/main.py`) | Serves REST endpoints, boots cache warm-up and exposes operational endpoints. |
+| Redis | Primary data store for dataset documents, sorted indexes, cache metadata, and task coordination. |
+| Celery (`app/tasks/dataset_tasks.py`) | Runs background jobs for full cache refreshes and paginated fetches; scheduled hourly via Celery beat. |
+| Hugging Face Hub (`app/integrations/hf_datasets.py`) | Source of truth for dataset metadata, commit history, file listings, and download URLs. |
+| Monitoring (`app/metrics/prometheus.py`) | Exposes request, cache, Celery, and memory metrics; `MemoryProfilerMiddleware` enforces per-request limits. |
 
-### **Search & Discovery**
-- **Text Search**: Fast HSCAN-based search across dataset IDs, names, and descriptions
-- **Multi-field Sorting**: Efficient sorting by downloads, likes, size with pre-computed indexes
-- **Pagination**: Stable ordering with offset/limit support
-- **Combined Operations**: Search + sort + pagination in unified queries
+## Features
 
-### **Dataset Metadata Services**
-- **Commit History**: Version tracking for dataset updates
-- **File Listings**: Complete file inventories for each dataset
-- **Download URLs**: Secure, direct download links for dataset files
-- **Real-time Metadata**: Live integration with Hugging Face Hub API
+- **Dataset Catalog Management** – Fetches the full Hugging Face registry, persists documents and sorted indexes (`downloads`, `likes`, `size_bytes`) in Redis.
+- **Impact Scoring** – Applies deterministic size/download/like thresholds to classify datasets as `high`, `medium`, `low`, or `not_available`.
+- **Search & Sorting** – Combines hash scans and Redis sorted sets for free-text search, multi-field ordering, and stable pagination.
+- **Metadata Services** – On-demand commit history, file inventories, and pre-signed download URLs surfaced through API endpoints.
+- **Operational Visibility** – Cache status, memory snapshots, and Prometheus metrics available without leaving the API surface.
 
-### **Caching**
-Redis powers a multi-layer caching system:
-- **Sorted Sets** (`hf:datasets:all:zset`): Stable pagination ordering
-- **Hash Storage** (`hf:datasets:all:hash`): Enriched dataset documents
-- **Sort Indexes** (`:by_downloads`, `:by_likes`, `:by_size_bytes`): Pre-computed sorting
-- **Metadata Cache** (`hf:datasets:meta`): Cache status and statistics
-- **4GB Memory Pool**: Optimized for dataset cataloging workload
+## API Surface
 
-### **Background Processing**
-Celery workers handle intensive operations asynchronously:
-- **Full Cache Refresh** (`refresh_hf_datasets_full_cache`): Complete dataset synchronization
-- **Batch Processing** (`fetch_datasets_page`): Efficient page-wise updates
-- **Scheduled Sync**: Automatic hourly cache refreshes
-- **Task Deduplication**: Prevents overlapping refresh operations
-- **Progress Tracking**: Real-time monitoring of long-running tasks
-
-### **Monitoring**
-Observability with Prometheus integration:
-- **HTTP Metrics**: Request/response tracking with status codes
-- **Redis Operations**: Cache hit/miss ratios and operation timing
-- **Memory Profiling**: Automatic garbage collection and memory limits
-- **Celery Monitoring**: Task duration, retries, and failure tracking
-- **Custom Metrics**: Dataset processing performance and cache efficiency
-
-### **Impact Assessment**
-Automated classification system with configurable thresholds:
-- **Size-based**: 100MB (low) / 1GB (medium) / 10GB (high) thresholds
-- **Popularity-based**: Download and like count analysis
-- **Metadata Enrichment**: Detailed assessment reports with metrics and methods
-- **Real-time Calculation**: Dynamic impact scoring during cache population
-
+| Method & Path | Description |
+| --- | --- |
+| `GET /` | Basic sanity check endpoint. |
+| `GET /api/datasets` | Paginated catalog listing.<br>Query params: `limit` (1–1000), `offset`, `search`, `sort_by` (`downloads`, `likes`, `size_bytes`), `sort_order` (`asc`/`desc`). |
+| `GET /api/datasets/cache-status` | Returns `total_items`, `last_update`, cache warm-up flags, and refresh state. |
+| `POST /api/datasets/refresh-cache` | Kicks off a full background refresh (requires `HF_API_TOKEN`). |
+| `GET /api/datasets/{dataset_id}/commits` | Recent commit history for a dataset repository. |
+| `GET /api/datasets/{dataset_id}/files` | Lists files in the dataset repository. |
+| `GET /api/datasets/{dataset_id}/file-url?filename=...` | Generates a temporary download URL; optional `revision` query parameter. |
+| `GET /api/datasets/meta` | Raw cache metadata hash. |
+| `GET /api/datasets/memory-status` | Snapshot of process/system memory including GC stats. |
+| `GET /api/datasets/metrics` | Prometheus metrics endpoint. |

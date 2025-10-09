@@ -7,10 +7,28 @@ from app.integrations.redis_client import get_redis_sync
 log = logging.getLogger(__name__)
 
 def generate_task_key(task_name, args, kwargs):
+    serializable_args = []
+    for arg in args:
+        if hasattr(arg, 'request') and hasattr(arg, 'apply_async'):
+            continue
+        try:
+            json.dumps(arg)
+            serializable_args.append(arg)
+        except (TypeError, ValueError):
+            serializable_args.append(str(arg))
+
+    serializable_kwargs = {}
+    for key, value in kwargs.items():
+        try:
+            json.dumps(value)
+            serializable_kwargs[key] = value
+        except (TypeError, ValueError):
+            serializable_kwargs[key] = str(value)
+
     task_data = {
         'name': task_name,
-        'args': args,
-        'kwargs': kwargs
+        'args': serializable_args,
+        'kwargs': serializable_kwargs
     }
     task_string = json.dumps(task_data, sort_keys=True)
     task_hash = hashlib.md5(task_string.encode()).hexdigest()
