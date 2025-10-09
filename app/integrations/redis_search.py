@@ -5,8 +5,9 @@ from app.integrations.redis_client import get_redis_sync, _json_deserialize
 log = logging.getLogger(__name__)
 
 
-def hscan_search_datasets(search_term, limit=10, offset=0, hash_key='hf:datasets:all:hash'):
-    redis_client = get_redis_sync()
+def hscan_search_datasets(search_term, limit=10, offset=0, hash_key='hf:datasets:all:hash', redis_client=None):
+    if redis_client is None:
+        redis_client = get_redis_sync()
     if not redis_client:
         return ([], 0)
     search_lower = search_term.lower()
@@ -16,38 +17,58 @@ def hscan_search_datasets(search_term, limit=10, offset=0, hash_key='hf:datasets
     cursor = '0'
     batch_size = 100
     try:
-        while True:
-            cursor, batch_data = redis_client.hscan(
-                hash_key,
-                cursor=cursor,
-                count=batch_size
-            )
+        if hasattr(redis_client, 'hscan'):
+            while True:
+                cursor, batch_data = redis_client.hscan(
+                    hash_key,
+                    cursor=cursor,
+                    count=batch_size
+                )
+                for dataset_id, dataset_json in batch_data.items():
+                    try:
+                        dataset = json.loads(dataset_json)
+                        id_match = search_lower in (dataset.get('id') or '').lower()
+                        desc_match = search_lower in str(dataset.get('description') or '').lower()
+                        name_match = search_lower in (dataset.get('name') or '').lower()
+                        if id_match or desc_match or name_match:
+                            total_matched += 1
+                            if items_to_skip > 0:
+                                items_to_skip -= 1
+                                continue
+                            if len(matching_items) < limit:
+                                matching_items.append(dataset)
+                    except json.JSONDecodeError:
+                        log.warning(f'Failed to parse dataset JSON for ID: {dataset_id}')
+                        continue
+                if cursor == '0' or (len(matching_items) >= limit and total_matched > offset + limit):
+                    break
+        else:
+            batch_data = redis_client.hgetall(hash_key) or {}
             for dataset_id, dataset_json in batch_data.items():
                 try:
                     dataset = json.loads(dataset_json)
-                    id_match = search_lower in (dataset.get('id') or '').lower()
-                    desc_match = search_lower in str(dataset.get('description') or '').lower()
-                    name_match = search_lower in (dataset.get('name') or '').lower()
-                    if id_match or desc_match or name_match:
-                        total_matched += 1
-                        if items_to_skip > 0:
-                            items_to_skip -= 1
-                            continue
-                        if len(matching_items) < limit:
-                            matching_items.append(dataset)
                 except json.JSONDecodeError:
                     log.warning(f'Failed to parse dataset JSON for ID: {dataset_id}')
                     continue
-            if cursor == '0' or (len(matching_items) >= limit and total_matched > offset + limit):
-                break
+                id_match = search_lower in (dataset.get('id') or '').lower()
+                desc_match = search_lower in str(dataset.get('description') or '').lower()
+                name_match = search_lower in (dataset.get('name') or '').lower()
+                if id_match or desc_match or name_match:
+                    total_matched += 1
+                    if items_to_skip > 0:
+                        items_to_skip -= 1
+                        continue
+                    if len(matching_items) < limit:
+                        matching_items.append(dataset)
         return (matching_items, total_matched)
     except Exception as exc:
         log.error(f'Error during HSCAN search: {exc}')
         return ([], 0)
 
 
-def get_sorted_datasets_efficient(sort_by, sort_order='desc', limit=10, offset=0, zset_key='hf:datasets:all:zset', hash_key='hf:datasets:all:hash'):
-    redis_client = get_redis_sync()
+def get_sorted_datasets_efficient(sort_by, sort_order='desc', limit=10, offset=0, zset_key='hf:datasets:all:zset', hash_key='hf:datasets:all:hash', redis_client=None):
+    if redis_client is None:
+        redis_client = get_redis_sync()
     if not redis_client:
         return ([], 0)
     try:
@@ -133,12 +154,13 @@ def create_sort_index(field, zset_key='hf:datasets:all:zset', hash_key='hf:datas
         return False
 
 
-def search_and_sort_datasets(search_term=None, sort_by=None, sort_order='desc', limit=10, offset=0):
+def search_and_sort_datasets(search_term=None, sort_by=None, sort_order='desc', limit=10, offset=0, redis_client=None):
     if search_term and sort_by:
         search_results, _ = hscan_search_datasets(
             search_term,
             limit=1000,
-            offset=0
+            offset=0,
+            redis_client=redis_client
         )
         def sort_key(item):
             value = item.get(sort_by)
@@ -152,11 +174,11 @@ def search_and_sort_datasets(search_term=None, sort_by=None, sort_order='desc', 
         paginated = search_results[offset:offset + limit]
         return (paginated, len(search_results))
     elif search_term:
-        return hscan_search_datasets(search_term, limit, offset)
+        return hscan_search_datasets(search_term, limit, offset, redis_client=redis_client)
     elif sort_by:
-        return get_sorted_datasets_efficient(sort_by, sort_order, limit, offset)
+        return get_sorted_datasets_efficient(sort_by, sort_order, limit, offset, redis_client=redis_client)
     else:
-        redis_client = get_redis_sync()
+        redis_client = redis_client or get_redis_sync()
         if not redis_client:
             return ([], 0)
         total = redis_client.zcard('hf:datasets:all:zset')

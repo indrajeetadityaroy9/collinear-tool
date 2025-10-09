@@ -110,10 +110,16 @@ def determine_impact_level_by_criteria(size_bytes, downloads=None, likes=None):
     return ('not_available', 'size_and_downloads_and_likes_unknown')
 
 
-async def _fetch_size(client, dataset_id):
+async def _fetch_size(client, dataset_id, token=None):
     url = f'https://datasets-server.huggingface.co/size?dataset={dataset_id}'
+    headers = None
+    if token:
+        headers = {'Authorization': f'Bearer {token}'}
     try:
-        resp = await client.get(url, timeout=30)
+        if headers:
+            resp = await client.get(url, timeout=30, headers=headers)
+        else:
+            resp = await client.get(url, timeout=30)
         if resp.status_code == 200:
             data = resp.json()
             return data.get('size', {}).get('dataset', {}).get('num_bytes_original_files')
@@ -379,7 +385,8 @@ def get_datasets_page_from_cache(limit, offset, search=None, sort_by=None, sort_
             sort_by=sort_by,
             sort_order=sort_order,
             limit=limit,
-            offset=offset
+            offset=offset,
+            redis_client=redis_client
         )
         items = [_normalize_cached_item(item) for item in items]
         response = _build_paginated_response(items, total_filtered, limit, offset)

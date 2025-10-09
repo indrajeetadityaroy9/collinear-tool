@@ -28,7 +28,7 @@ async def cache_status():
 
 @router.get('/')
 @cache_response(ttl=300, key_prefix="api:cache:datasets")
-async def list_datasets(request):
+async def list_datasets(request: Request):
     params = request.query_params
     try:
         limit = int(params.get('limit', 10))
@@ -76,7 +76,7 @@ async def list_files(dataset_id):
 
 
 @router.get('/{dataset_id:path}/file-url')
-async def get_file_url_endpoint(dataset_id, request):
+async def get_file_url_endpoint(dataset_id, request: Request):
     filename = request.query_params.get('filename')
     if not filename:
         raise HTTPException(status_code=422, detail='filename is required')
